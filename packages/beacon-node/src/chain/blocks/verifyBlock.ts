@@ -9,7 +9,7 @@ import {
 } from "@lodestar/state-transition";
 import {allForks, bellatrix} from "@lodestar/types";
 import {toHexString} from "@chainsafe/ssz";
-import {IForkChoice, ExecutionStatus, assertValidTerminalPowBlock} from "@lodestar/fork-choice";
+import {IForkChoice, ExecutionStatus,MaybeValidExecutionStatus, assertValidTerminalPowBlock} from "@lodestar/fork-choice";
 import {IChainForkConfig} from "@lodestar/config";
 import {ILogger} from "@lodestar/utils";
 import {IMetrics} from "../../metrics/index.js";
@@ -49,7 +49,7 @@ export async function verifyBlockStateTransition(
   chain: VerifyBlockModules,
   block: allForks.SignedBeaconBlock,
   opts: ImportBlockOpts & BlockProcessOpts
-): Promise<{postState: CachedBeaconStateAllForks; executionStatus: ExecutionStatus; proposerBalanceDiff: number}> {
+): Promise<{postState: CachedBeaconStateAllForks; executionStatus: MaybeValidExecutionStatus; proposerBalanceDiff: number}> {
   const {validProposerSignature, validSignatures} = opts;
 
   // TODO: Skip in process chain segment
@@ -107,6 +107,13 @@ export async function verifyBlockStateTransition(
     }
   }
 
+  // Parent is known to the fork-choice
+  const parentRoot = toHexString(block.message.parentRoot);
+  const parentBlock = chain.forkChoice.getBlockHex(parentRoot);
+  if (!parentBlock) {
+    throw new BlockError(block, {code: BlockErrorCode.PARENT_UNKNOWN, parentRoot});
+  }
+
   let executionStatus: ExecutionStatus;
   if (executionPayloadEnabled) {
     // TODO: Handle better notifyNewPayload() returning error is syncing
@@ -121,10 +128,9 @@ export async function verifyBlockStateTransition(
       case ExecutePayloadStatus.INVALID: {
         // If the parentRoot is not same as latestValidHash, then the branch from latestValidHash
         // to parentRoot needs to be invalidated
-        const parentHashHex = toHexString(block.message.parentRoot);
         chain.forkChoice.validateLatestHash(
           execResult.latestValidHash,
-          parentHashHex !== execResult.latestValidHash ? parentHashHex : null
+          parentBlock.executionPayloadBlockHash !== execResult.latestValidHash ? parentRoot : null
         );
         throw new BlockError(block, {
           code: BlockErrorCode.EXECUTION_ENGINE_ERROR,
@@ -158,16 +164,13 @@ export async function verifyBlockStateTransition(
         //    SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY ahead of the slot of the block being
         //    imported.
 
-        const parentRoot = toHexString(block.message.parentRoot);
-        const parentBlock = chain.forkChoice.getBlockHex(parentRoot);
         const justifiedBlock = chain.forkChoice.getJustifiedBlock();
 
         if (
-          !parentBlock ||
           // Following condition is the !(Not) of the safe import condition
-          (parentBlock.executionStatus === ExecutionStatus.PreMerge &&
-            justifiedBlock.executionStatus === ExecutionStatus.PreMerge &&
-            block.message.slot + opts.safeSlotsToImportOptimistically > chain.clock.currentSlot)
+          parentBlock.executionStatus === ExecutionStatus.PreMerge &&
+          justifiedBlock.executionStatus === ExecutionStatus.PreMerge &&
+          block.message.slot + opts.safeSlotsToImportOptimistically > chain.clock.currentSlot
         ) {
           throw new BlockError(block, {
             code: BlockErrorCode.EXECUTION_ENGINE_ERROR,
