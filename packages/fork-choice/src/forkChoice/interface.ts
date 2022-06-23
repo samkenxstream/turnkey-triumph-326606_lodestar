@@ -78,7 +78,7 @@ export interface IForkChoice {
    * will not be run here.
    */
   onAttestation(attestation: phase0.IndexedAttestation, attDataRoot?: string): void;
-  getLatestMessage(validatorIndex: ValidatorIndex): ILatestMessage | undefined;
+  getLatestMessage(validatorIndex: ValidatorIndex): LatestMessage | undefined;
   /**
    * Call `onTick` for all slots between `fcStore.getCurrentSlot()` and the provided `currentSlot`.
    */
@@ -155,18 +155,18 @@ export type OnBlockPrecachedData = {
   executionStatus?: ExecutionStatus;
 };
 
-export interface ILatestMessage {
+export type LatestMessage = {
   epoch: Epoch;
   root: RootHex;
-}
+};
 
 /**
  * Used for queuing attestations from the current slot. Only contains the minimum necessary
  * information about the attestation.
  */
-export interface IQueuedAttestation {
+export type QueuedAttestation = {
   slot: Slot;
   attestingIndices: ValidatorIndex[];
   blockRoot: RootHex;
   targetEpoch: Epoch;
-}
+};

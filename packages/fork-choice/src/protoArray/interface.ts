@@ -7,11 +7,11 @@ export const HEX_ZERO_HASH = "0x000000000000000000000000000000000000000000000000
 /**
  * Simplified 'latest message' with previous message
  */
-export interface IVoteTracker {
+export type VoteTracker = {
   currentRoot: RootHex;
   nextRoot: RootHex;
   nextEpoch: Epoch;
-}
+};
 
 export enum ExecutionStatus {
   Valid = "Valid",

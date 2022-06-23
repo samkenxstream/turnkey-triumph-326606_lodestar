@@ -16,12 +16,12 @@ import {
 import {IChainConfig, IChainForkConfig} from "@chainsafe/lodestar-config";
 
 import {computeDeltas} from "../protoArray/computeDeltas.js";
-import {HEX_ZERO_HASH, IVoteTracker, IProtoBlock, ExecutionStatus} from "../protoArray/interface.js";
+import {HEX_ZERO_HASH, VoteTracker, IProtoBlock, ExecutionStatus} from "../protoArray/interface.js";
 import {ProtoArray} from "../protoArray/protoArray.js";
 
 import {IForkChoiceMetrics} from "../metrics.js";
 import {ForkChoiceError, ForkChoiceErrorCode, InvalidBlockCode, InvalidAttestationCode} from "./errors.js";
-import {IForkChoice, ILatestMessage, IQueuedAttestation, OnBlockPrecachedData, PowBlockHex} from "./interface.js";
+import {IForkChoice, LatestMessage, QueuedAttestation, OnBlockPrecachedData, PowBlockHex} from "./interface.js";
 import {IForkChoiceStore, CheckpointWithHex, toCheckpointWithHex} from "./store.js";
 
 /* eslint-disable max-len */
@@ -49,13 +49,13 @@ export class ForkChoice implements IForkChoice {
    * Indexed by validator index
    * Each vote contains the latest message and previous message
    */
-  private readonly votes: IVoteTracker[] = [];
+  private readonly votes: VoteTracker[] = [];
 
   /**
    * Attestations that arrived at the current slot and must be queued for later processing.
    * NOT currently tracked in the protoArray
    */
-  private readonly queuedAttestations = new Set<IQueuedAttestation>();
+  private readonly queuedAttestations = new Set<QueuedAttestation>();
 
   /**
    * Balances tracked in the protoArray, or soon to be tracked
@@ -490,7 +490,7 @@ export class ForkChoice implements IForkChoice {
     }
   }
 
-  getLatestMessage(validatorIndex: ValidatorIndex): ILatestMessage | undefined {
+  getLatestMessage(validatorIndex: ValidatorIndex): LatestMessage | undefined {
     const vote = this.votes[validatorIndex];
     if (vote === undefined) {
       return undefined;
