@@ -32,7 +32,14 @@ export interface IForkChoice {
    */
   getHeadRoot(): RootHex;
   getHead(): IProtoBlock;
-  updateHead(): IProtoBlock;
+  /**
+   * Runs fork-choice and caches head result internally.
+   * @param justifiedBalances Effective balances for fork-choice at current justified checkpoint.
+   * Balances must be provided out of band to prevent fork-choice from becoming async. Justified balances
+   * may not be available, and require expensive regen reading from DB and replaying blocks. The caller
+   * of updateHead() is responsible for fetching the justified balances from somewhere.
+   */
+  updateHead(justifiedBalances: EffectiveBalanceIncrements): IProtoBlock;
   /**
    * Retrieves all possible chain heads (leaves of fork choice tree).
    */
@@ -58,7 +65,14 @@ export interface IForkChoice {
    * `preCachedData` includes data necessary for validation included in the spec but some data is
    * pre-fetched in advance to keep the fork-choice fully syncronous
    */
-  onBlock(block: allForks.BeaconBlock, state: BeaconStateAllForks, preCachedData?: OnBlockPrecachedData): void;
+  onBlock(
+    block: allForks.BeaconBlock,
+    blockRootHex: RootHex,
+    state: BeaconStateAllForks,
+    blockDelaySec: number,
+    currentSlot: Slot,
+    executionStatus: ExecutionStatus
+  ): void;
   /**
    * Register `attestation` with the fork choice DAG so that it may influence future calls to `getHead`.
    *
@@ -145,14 +159,6 @@ export type PowBlockHex = {
   blockHash: RootHex;
   parentHash: RootHex;
   totalDifficulty: bigint;
-};
-
-export type OnBlockPrecachedData = {
-  /** `justifiedBalances` balances of justified state which is updated synchronously. */
-  justifiedBalances?: EffectiveBalanceIncrements;
-  /** Time in seconds when the block was received */
-  blockDelaySec: number;
-  executionStatus?: ExecutionStatus;
 };
 
 export type LatestMessage = {

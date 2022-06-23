@@ -22,7 +22,7 @@ export type FullyVerifiedBlockFlags = {
   /**
    * If the execution payload couldnt be verified because of EL syncing status, used in optimistic sync or for merge block
    */
-  executionStatus?: ExecutionStatus;
+  executionStatus: ExecutionStatus;
 };
 
 export type PartiallyVerifiedBlockFlags = FullyVerifiedBlockFlags & {

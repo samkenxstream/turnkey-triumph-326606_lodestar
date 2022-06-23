@@ -1,8 +1,12 @@
 import {toHexString} from "@chainsafe/ssz";
-import {SAFE_SLOTS_TO_UPDATE_JUSTIFIED, SLOTS_PER_HISTORICAL_ROOT, SLOTS_PER_EPOCH} from "@chainsafe/lodestar-params";
+import {
+  SAFE_SLOTS_TO_UPDATE_JUSTIFIED,
+  SLOTS_PER_HISTORICAL_ROOT,
+  SLOTS_PER_EPOCH,
+  INTERVALS_PER_SLOT,
+} from "@chainsafe/lodestar-params";
 import {bellatrix, Slot, ValidatorIndex, phase0, allForks, ssz, RootHex, Epoch, Root} from "@chainsafe/lodestar-types";
 import {
-  getCurrentInterval,
   computeSlotsSinceEpochStart,
   computeStartSlotAtEpoch,
   computeEpochAtSlot,
@@ -21,10 +25,15 @@ import {ProtoArray} from "../protoArray/protoArray.js";
 
 import {IForkChoiceMetrics} from "../metrics.js";
 import {ForkChoiceError, ForkChoiceErrorCode, InvalidBlockCode, InvalidAttestationCode} from "./errors.js";
-import {IForkChoice, LatestMessage, QueuedAttestation, OnBlockPrecachedData, PowBlockHex} from "./interface.js";
+import {IForkChoice, LatestMessage, QueuedAttestation, PowBlockHex} from "./interface.js";
 import {IForkChoiceStore, CheckpointWithHex, toCheckpointWithHex} from "./store.js";
 
 /* eslint-disable max-len */
+
+type CheckpointsWithHex = {
+  justifiedCheckpoint: CheckpointWithHex;
+  finalizedCheckpoint: CheckpointWithHex;
+};
 
 /**
  * Provides an implementation of "Ethereum Consensus -- Beacon Chain Fork Choice":
@@ -57,16 +66,11 @@ export class ForkChoice implements IForkChoice {
    */
   private readonly queuedAttestations = new Set<QueuedAttestation>();
 
-  /**
-   * Balances tracked in the protoArray, or soon to be tracked
-   * Indexed by validator index
-   *
-   * This should be the balances of the state at fcStore.bestJustifiedCheckpoint
-   */
-  private bestJustifiedBalances: EffectiveBalanceIncrements;
+  // Note: as of Jun 2022 Lodestar metrics show that 100% of the times updateHead() is called, synced = false.
+  // Because we are processing attestations from gossip, recomputing scores is always necessary
+  // /** Avoid having to compute detas all the times. */
+  // private synced = false;
 
-  /** Avoid having to compute detas all the times. */
-  private synced = false;
   /** Cached head */
   private head: IProtoBlock;
   /**
@@ -93,12 +97,11 @@ export class ForkChoice implements IForkChoice {
      *
      * This should be the balances of the state at fcStore.justifiedCheckpoint
      */
-    private justifiedBalances: EffectiveBalanceIncrements,
+    justifiedBalances: EffectiveBalanceIncrements,
     private readonly proposerBoostEnabled: boolean,
     private readonly metrics?: IForkChoiceMetrics | null
   ) {
-    this.bestJustifiedBalances = justifiedBalances;
-    this.head = this.updateHead();
+    this.head = this.updateHead(justifiedBalances);
   }
 
   /**
@@ -173,70 +176,75 @@ export class ForkChoice implements IForkChoice {
    * Is equivalent to:
    *
    * https://github.com/ethereum/consensus-specs/blob/v1.1.10/specs/phase0/fork-choice.md#get_head
+   *
+   * @param justifiedBalances Effective balances for fork-choice at current justified checkpoint.
+   * Balances must be provided out of band to prevent fork-choice from becoming async. Justified balances
+   * may not be available, and require expensive regen reading from DB and replaying blocks. The caller
+   * of updateHead() is responsible for fetching the justified balances from somewhere.
    */
-  updateHead(): IProtoBlock {
+  updateHead(justifiedBalances: EffectiveBalanceIncrements): IProtoBlock {
+    // TODO: Lighthouse diff
+    // self.update_time(current_slot, spec)?;
+
     // balances is not changed but votes are changed
 
-    let timer;
     this.metrics?.forkChoiceRequests.inc();
-    try {
-      let deltas: number[];
+    const timer = this.metrics?.forkChoiceFindHead.startTimer();
 
-      // Check if scores need to be calculated/updated
-      if (!this.synced) {
-        // eslint-disable-next-line prefer-const
-        timer = this.metrics?.forkChoiceFindHead.startTimer();
-        // eslint-disable-next-line prefer-const
-        deltas = computeDeltas(this.protoArray.indices, this.votes, this.justifiedBalances, this.justifiedBalances);
-        /**
-         * The structure in line with deltas to propogate boost up the branch
-         * starting from the proposerIndex
-         */
-        let proposerBoost: {root: RootHex; score: number} | null = null;
-        if (this.proposerBoostEnabled && this.proposerBoostRoot) {
-          const proposerBoostScore =
-            this.justifiedProposerBoostScore ??
-            computeProposerBoostScoreFromBalances(this.justifiedBalances, {
-              slotsPerEpoch: SLOTS_PER_EPOCH,
-              proposerScoreBoost: this.config.PROPOSER_SCORE_BOOST,
-            });
-          proposerBoost = {root: this.proposerBoostRoot, score: proposerBoostScore};
-          this.justifiedProposerBoostScore = proposerBoostScore;
-        }
+    // NOTE: In current Lodestar metrics, 100% of forkChoiceRequests result in a changed head.
+    // No need to cache the head anymore
+    //
+    // Note: In current Lodestar metrics, 100% of forkChoiceRequests this.synced = false
 
-        this.protoArray.applyScoreChanges({
-          deltas,
-          proposerBoost,
-          justifiedEpoch: this.fcStore.justifiedCheckpoint.epoch,
-          justifiedRoot: this.fcStore.justifiedCheckpoint.rootHex,
-          finalizedEpoch: this.fcStore.finalizedCheckpoint.epoch,
-          finalizedRoot: this.fcStore.finalizedCheckpoint.rootHex,
-        });
-        this.synced = true;
-      }
+    // Check if scores need to be calculated/updated
 
-      const headRoot = this.protoArray.findHead(this.fcStore.justifiedCheckpoint.rootHex);
-      const headIndex = this.protoArray.indices.get(headRoot);
-      if (headIndex === undefined) {
-        throw new ForkChoiceError({
-          code: ForkChoiceErrorCode.MISSING_PROTO_ARRAY_BLOCK,
-          root: headRoot,
+    // eslint-disable-next-line prefer-const
+    const deltas = computeDeltas(this.protoArray.indices, this.votes, justifiedBalances, justifiedBalances);
+
+    /**
+     * The structure in line with deltas to propogate boost up the branch
+     * starting from the proposerIndex
+     */
+    let proposerBoost: {root: RootHex; score: number} | null = null;
+    if (this.proposerBoostEnabled && this.proposerBoostRoot) {
+      const proposerBoostScore =
+        this.justifiedProposerBoostScore ??
+        computeProposerBoostScoreFromBalances(justifiedBalances, {
+          slotsPerEpoch: SLOTS_PER_EPOCH,
+          proposerScoreBoost: this.config.PROPOSER_SCORE_BOOST,
         });
-      }
-      const headNode = this.protoArray.nodes[headIndex];
-      if (headNode === undefined) {
-        throw new ForkChoiceError({
-          code: ForkChoiceErrorCode.MISSING_PROTO_ARRAY_BLOCK,
-          root: headRoot,
-        });
-      }
-      return (this.head = headNode);
-    } catch (e) {
-      this.metrics?.forkChoiceErrors.inc();
-      throw e;
-    } finally {
-      if (timer) timer();
+      proposerBoost = {root: this.proposerBoostRoot, score: proposerBoostScore};
+      this.justifiedProposerBoostScore = proposerBoostScore;
     }
+
+    this.protoArray.applyScoreChanges({
+      deltas,
+      proposerBoost,
+      justifiedEpoch: this.fcStore.justifiedCheckpoint.epoch,
+      justifiedRoot: this.fcStore.justifiedCheckpoint.rootHex,
+      finalizedEpoch: this.fcStore.finalizedCheckpoint.epoch,
+      finalizedRoot: this.fcStore.finalizedCheckpoint.rootHex,
+    });
+
+    const headRoot = this.protoArray.findHead(this.fcStore.justifiedCheckpoint.rootHex);
+    const headIndex = this.protoArray.indices.get(headRoot);
+    if (headIndex === undefined) {
+      throw new ForkChoiceError({
+        code: ForkChoiceErrorCode.MISSING_PROTO_ARRAY_BLOCK,
+        root: headRoot,
+      });
+    }
+    const headNode = this.protoArray.nodes[headIndex];
+    if (headNode === undefined) {
+      throw new ForkChoiceError({
+        code: ForkChoiceErrorCode.MISSING_PROTO_ARRAY_BLOCK,
+        root: headRoot,
+      });
+    }
+
+    timer?.();
+
+    return (this.head = headNode);
   }
 
   /** Very expensive function, iterates the entire ProtoArray. Called only in debug API */
@@ -275,9 +283,20 @@ export class ForkChoice implements IForkChoice {
    * `justifiedBalances` balances of justified state which is updated synchronously.
    * This ensures that the forkchoice is never out of sync.
    */
-  onBlock(block: allForks.BeaconBlock, state: BeaconStateAllForks, preCachedData?: OnBlockPrecachedData): void {
+  onBlock(
+    block: allForks.BeaconBlock,
+    blockRootHex: RootHex,
+    state: BeaconStateAllForks,
+    blockDelaySec: number,
+    currentSlot: Slot,
+    executionStatus: ExecutionStatus
+  ): void {
+    // Ensure the store is up-to-date
+    this.updateTime(currentSlot);
+
     const {parentRoot, slot} = block;
     const parentRootHex = toHexString(parentRoot);
+
     // Parent block must be known
     if (!this.protoArray.hasBlock(parentRootHex)) {
       throw new ForkChoiceError({
@@ -332,6 +351,12 @@ export class ForkChoice implements IForkChoice {
       });
     }
 
+    // Add proposer score boost if the block is timely
+    // before attesting interval = before 1st interval
+    if (this.fcStore.currentSlot === slot && blockDelaySec < this.config.SECONDS_PER_SLOT / INTERVALS_PER_SLOT) {
+      this.proposerBoostRoot = blockRootHex;
+    }
+
     // As per specs, we should be validating here the terminal conditions of
     // the PoW if this were a merge transition block.
     // (https://github.com/ethereum/consensus-specs/blob/dev/specs/bellatrix/fork-choice.md#on_block)
@@ -342,68 +367,13 @@ export class ForkChoice implements IForkChoice {
     //  1. Its prudent to fail fast and not try importing a block in forkChoice.
     //  2. Also the data to run such a validation is readily available there.
 
-    let shouldUpdateJustified = false;
-    const {finalizedCheckpoint} = state;
-    const currentJustifiedCheckpoint = toCheckpointWithHex(state.currentJustifiedCheckpoint);
-    const stateJustifiedEpoch = currentJustifiedCheckpoint.epoch;
-
-    // Update justified checkpoint.
-    if (stateJustifiedEpoch > this.fcStore.justifiedCheckpoint.epoch) {
-      const {justifiedBalances} = preCachedData || {};
-      if (!justifiedBalances) {
-        throw new ForkChoiceError({
-          code: ForkChoiceErrorCode.UNABLE_TO_SET_JUSTIFIED_CHECKPOINT,
-          error: new Error("No validator balances supplied"),
-        });
-      }
-      if (stateJustifiedEpoch > this.fcStore.bestJustifiedCheckpoint.epoch) {
-        this.updateBestJustified(currentJustifiedCheckpoint, justifiedBalances);
-      }
-      if (this.shouldUpdateJustifiedCheckpoint(state)) {
-        // wait to update until after finalized checkpoint is set
-        shouldUpdateJustified = true;
-      }
-    }
-
-    // Update finalized checkpoint.
-    if (finalizedCheckpoint.epoch > this.fcStore.finalizedCheckpoint.epoch) {
-      this.fcStore.finalizedCheckpoint = toCheckpointWithHex(finalizedCheckpoint);
-      shouldUpdateJustified = true;
-      this.synced = false;
-    }
-
-    // This needs to be performed after finalized checkpoint has been updated
-    if (shouldUpdateJustified) {
-      const {justifiedBalances} = preCachedData || {};
-      if (!justifiedBalances) {
-        throw new ForkChoiceError({
-          code: ForkChoiceErrorCode.UNABLE_TO_SET_JUSTIFIED_CHECKPOINT,
-          error: new Error("No validator balances supplied"),
-        });
-      }
-
-      this.updateJustified(currentJustifiedCheckpoint, justifiedBalances);
-    }
-
-    const blockRoot = this.config.getForkTypes(slot).BeaconBlock.hashTreeRoot(block);
-    const blockRootHex = toHexString(blockRoot);
-
-    // Add proposer score boost if the block is timely
-    if (this.proposerBoostEnabled && slot === this.fcStore.currentSlot) {
-      const {blockDelaySec} = preCachedData || {};
-      if (blockDelaySec === undefined) {
-        throw Error("Missing blockDelaySec info for proposerBoost");
-      }
-
-      const proposerInterval = getCurrentInterval(this.config, blockDelaySec);
-      if (proposerInterval < 1) {
-        this.proposerBoostRoot = blockRootHex;
-        this.synced = false;
-      }
-    }
+    const justifiedCheckpoint = toCheckpointWithHex(state.currentJustifiedCheckpoint);
+    const finalizedCheckpoint = toCheckpointWithHex(state.finalizedCheckpoint);
+    this.updateCheckpoints(state.slot, {justifiedCheckpoint, finalizedCheckpoint});
 
     const targetSlot = computeStartSlotAtEpoch(computeEpochAtSlot(slot));
-    const targetRoot = slot === targetSlot ? blockRoot : state.blockRoots.get(targetSlot % SLOTS_PER_HISTORICAL_ROOT);
+    const targetRootHex =
+      slot === targetSlot ? blockRootHex : toHexString(state.blockRoots.get(targetSlot % SLOTS_PER_HISTORICAL_ROOT));
 
     // This does not apply a vote to the block, it just makes fork choice aware of the block so
     // it can still be identified as the head even if it doesn't have any votes.
@@ -411,21 +381,40 @@ export class ForkChoice implements IForkChoice {
       slot: slot,
       blockRoot: blockRootHex,
       parentRoot: parentRootHex,
-      targetRoot: toHexString(targetRoot),
+      targetRoot: targetRootHex,
       stateRoot: toHexString(block.stateRoot),
 
-      justifiedEpoch: stateJustifiedEpoch,
-      justifiedRoot: toHexString(state.currentJustifiedCheckpoint.root),
+      justifiedEpoch: justifiedCheckpoint.epoch,
+      justifiedRoot: justifiedCheckpoint.rootHex,
       finalizedEpoch: finalizedCheckpoint.epoch,
-      finalizedRoot: toHexString(state.finalizedCheckpoint.root),
+      finalizedRoot: finalizedCheckpoint.rootHex,
 
       ...(isBellatrixBlockBodyType(block.body) && isBellatrixStateType(state) && isExecutionEnabled(state, block.body)
         ? {
             executionPayloadBlockHash: toHexString(block.body.executionPayload.blockHash),
-            executionStatus: this.getPostMergeExecStatus(preCachedData),
+            executionStatus: this.getPostMergeExecStatus(executionStatus),
           }
-        : {executionPayloadBlockHash: null, executionStatus: this.getPreMergeExecStatus(preCachedData)}),
+        : {executionPayloadBlockHash: null, executionStatus: this.getPreMergeExecStatus(executionStatus)}),
     });
+  }
+
+  updateCheckpoints(stateSlot: Slot, checkpoints: CheckpointsWithHex): void {
+    // Update justified checkpoint.
+    if (checkpoints.finalizedCheckpoint.epoch > this.fcStore.justifiedCheckpoint.epoch) {
+      if (checkpoints.justifiedCheckpoint.epoch > this.fcStore.bestJustifiedCheckpoint.epoch) {
+        this.fcStore.bestJustifiedCheckpoint = checkpoints.justifiedCheckpoint;
+      }
+
+      if (this.shouldUpdateJustifiedCheckpoint(checkpoints.justifiedCheckpoint, stateSlot)) {
+        this.updateJustified(checkpoints.justifiedCheckpoint);
+      }
+    }
+
+    // Update finalized checkpoint.
+    if (checkpoints.finalizedCheckpoint.epoch > this.fcStore.finalizedCheckpoint.epoch) {
+      this.fcStore.finalizedCheckpoint = checkpoints.finalizedCheckpoint;
+      this.updateJustified(checkpoints.justifiedCheckpoint);
+    }
   }
 
   /**
@@ -696,17 +685,13 @@ export class ForkChoice implements IForkChoice {
     return;
   }
 
-  private getPreMergeExecStatus(preCachedData?: OnBlockPrecachedData): ExecutionStatus.PreMerge {
-    const executionStatus = preCachedData?.executionStatus || ExecutionStatus.PreMerge;
+  private getPreMergeExecStatus(executionStatus: ExecutionStatus): ExecutionStatus.PreMerge {
     if (executionStatus !== ExecutionStatus.PreMerge)
       throw Error(`Invalid pre-merge execution status: expected: ${ExecutionStatus.PreMerge}, got ${executionStatus}`);
     return executionStatus;
   }
 
-  private getPostMergeExecStatus(
-    preCachedData?: OnBlockPrecachedData
-  ): ExecutionStatus.Valid | ExecutionStatus.Syncing {
-    const executionStatus = preCachedData?.executionStatus || ExecutionStatus.Syncing;
+  private getPostMergeExecStatus(executionStatus: ExecutionStatus): ExecutionStatus.Valid | ExecutionStatus.Syncing {
     if (executionStatus === ExecutionStatus.PreMerge)
       throw Error(
         `Invalid post-merge execution status: expected: ${ExecutionStatus.Syncing} or ${ExecutionStatus.Valid} , got ${executionStatus}`
@@ -714,19 +699,10 @@ export class ForkChoice implements IForkChoice {
     return executionStatus;
   }
 
-  private updateJustified(justifiedCheckpoint: CheckpointWithHex, justifiedBalances: EffectiveBalanceIncrements): void {
-    this.synced = false;
-    this.justifiedBalances = justifiedBalances;
-    this.justifiedProposerBoostScore = null;
+  private updateJustified(justifiedCheckpoint: CheckpointWithHex): void {
     this.fcStore.justifiedCheckpoint = justifiedCheckpoint;
-  }
-
-  private updateBestJustified(
-    justifiedCheckpoint: CheckpointWithHex,
-    justifiedBalances: EffectiveBalanceIncrements
-  ): void {
-    this.bestJustifiedBalances = justifiedBalances;
-    this.fcStore.bestJustifiedCheckpoint = justifiedCheckpoint;
+    // TODO: Is this necessary?
+    this.justifiedProposerBoostScore = null;
   }
 
   /**
@@ -739,10 +715,10 @@ export class ForkChoice implements IForkChoice {
    *
    * https://github.com/ethereum/consensus-specs/blob/v1.1.10/specs/phase0/fork-choice.md#should_update_justified_checkpoint
    */
-  private shouldUpdateJustifiedCheckpoint(state: BeaconStateAllForks): boolean {
-    const {slot, currentJustifiedCheckpoint} = state;
-    const newJustifiedCheckpoint = currentJustifiedCheckpoint;
-
+  private shouldUpdateJustifiedCheckpoint(newJustifiedCheckpoint: CheckpointWithHex, stateSlot: Slot): boolean {
+    // To address the bouncing attack, only update conflicting justified checkpoints in the first 1/3 of the epoch.
+    // Otherwise, delay consideration until the next epoch boundary with bestJustifiedCheckpoint
+    // See https://ethresear.ch/t/prevention-of-bouncing-attack-on-ffg/6114 for more detailed analysis and discussion.
     if (computeSlotsSinceEpochStart(this.fcStore.currentSlot) < SAFE_SLOTS_TO_UPDATE_JUSTIFIED) {
       return true;
     }
@@ -750,16 +726,17 @@ export class ForkChoice implements IForkChoice {
     const justifiedSlot = computeStartSlotAtEpoch(this.fcStore.justifiedCheckpoint.epoch);
 
     // This sanity check is not in the spec, but the invariant is implied
-    if (justifiedSlot >= slot) {
+    if (justifiedSlot >= stateSlot) {
       throw new ForkChoiceError({
         code: ForkChoiceErrorCode.ATTEMPT_TO_REVERT_JUSTIFICATION,
         store: justifiedSlot,
-        state: slot,
+        state: stateSlot,
       });
     }
 
+    // TODO: Line below in not in spec nor other implementations
     // at regular sync time we don't want to wait for clock time next epoch to update bestJustifiedCheckpoint
-    if (computeEpochAtSlot(slot) < computeEpochAtSlot(this.fcStore.currentSlot)) {
+    if (computeEpochAtSlot(stateSlot) < computeEpochAtSlot(this.fcStore.currentSlot)) {
       return true;
     }
 
@@ -930,7 +907,6 @@ export class ForkChoice implements IForkChoice {
    * Add a validator's latest message to the tracked votes
    */
   private addLatestMessage(validatorIndex: ValidatorIndex, nextEpoch: Epoch, nextRoot: RootHex): void {
-    this.synced = false;
     const vote = this.votes[validatorIndex];
     if (vote === undefined) {
       this.votes[validatorIndex] = {
@@ -986,25 +962,31 @@ export class ForkChoice implements IForkChoice {
 
     // Update store time
     this.fcStore.currentSlot = time;
+
+    // Reset proposer boost if this is a new slot.
     if (this.proposerBoostRoot) {
-      // Since previous weight was boosted, we need would now need to recalculate the
-      // scores but without the boost
+      // Since previous weight was boosted, we need would now need to recalculate the scores without the boost
       this.proposerBoostRoot = null;
-      this.synced = false;
     }
 
-    const currentSlot = time;
-    if (computeSlotsSinceEpochStart(currentSlot) !== 0) {
+    // Not a new epoch, return.
+    if (computeSlotsSinceEpochStart(time) !== 0) {
       return;
     }
 
-    const {bestJustifiedCheckpoint, justifiedCheckpoint, finalizedCheckpoint} = this.fcStore;
+    const {bestJustifiedCheckpoint, finalizedCheckpoint} = this.fcStore;
+
     // Update store.justified_checkpoint if a better checkpoint on the store.finalized_checkpoint chain
-    if (bestJustifiedCheckpoint.epoch > justifiedCheckpoint.epoch) {
+    //
+    // Reason: A better justifiedCheckpoint from a block is only updated immediately if in the first 1/3 of the epoch
+    // This addresses a bouncing attack, see https://ethresear.ch/t/prevention-of-bouncing-attack-on-ffg/6114
+    if (this.fcStore.bestJustifiedCheckpoint.epoch > this.fcStore.justifiedCheckpoint.epoch) {
+      // TODO: Is this check necessary? It checks that bestJustifiedCheckpoint is still descendant of finalized
+      // From https://github.com/ChainSafe/lodestar/commit/6a0745e9db27dfce67b6e6c25bba452283dbbea9#
       const finalizedSlot = computeStartSlotAtEpoch(finalizedCheckpoint.epoch);
       const ancestorAtFinalizedSlot = this.getAncestor(bestJustifiedCheckpoint.rootHex, finalizedSlot);
       if (ancestorAtFinalizedSlot === finalizedCheckpoint.rootHex) {
-        this.updateJustified(this.fcStore.bestJustifiedCheckpoint, this.bestJustifiedBalances);
+        this.updateJustified(this.fcStore.bestJustifiedCheckpoint);
       }
     }
   }
