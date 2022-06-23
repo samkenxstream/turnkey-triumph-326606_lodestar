@@ -12,7 +12,7 @@ import {
   computeEpochAtSlot,
   ZERO_HASH,
   EffectiveBalanceIncrements,
-  BeaconStateAllForks,
+  CachedBeaconStateAllForks,
   isBellatrixBlockBodyType,
   isBellatrixStateType,
   isExecutionEnabled,
@@ -26,7 +26,7 @@ import {ProtoArray} from "../protoArray/protoArray.js";
 import {IForkChoiceMetrics} from "../metrics.js";
 import {ForkChoiceError, ForkChoiceErrorCode, InvalidBlockCode, InvalidAttestationCode} from "./errors.js";
 import {IForkChoice, LatestMessage, QueuedAttestation, PowBlockHex} from "./interface.js";
-import {IForkChoiceStore, CheckpointWithHex, toCheckpointWithHex} from "./store.js";
+import {IForkChoiceStore, CheckpointWithHex, toCheckpointWithHex, CheckpointWithBalances} from "./store.js";
 
 /* eslint-disable max-len */
 
@@ -91,17 +91,10 @@ export class ForkChoice implements IForkChoice {
     private readonly fcStore: IForkChoiceStore,
     /** The underlying representation of the block DAG. */
     private readonly protoArray: ProtoArray,
-    /**
-     * Balances currently tracked in the protoArray
-     * Indexed by validator index
-     *
-     * This should be the balances of the state at fcStore.justifiedCheckpoint
-     */
-    justifiedBalances: EffectiveBalanceIncrements,
     private readonly proposerBoostEnabled: boolean,
     private readonly metrics?: IForkChoiceMetrics | null
   ) {
-    this.head = this.updateHead(justifiedBalances);
+    this.head = this.updateHead();
   }
 
   /**
@@ -182,7 +175,7 @@ export class ForkChoice implements IForkChoice {
    * may not be available, and require expensive regen reading from DB and replaying blocks. The caller
    * of updateHead() is responsible for fetching the justified balances from somewhere.
    */
-  updateHead(justifiedBalances: EffectiveBalanceIncrements): IProtoBlock {
+  updateHead(): IProtoBlock {
     // TODO: Lighthouse diff
     // self.update_time(current_slot, spec)?;
 
@@ -199,7 +192,12 @@ export class ForkChoice implements IForkChoice {
     // Check if scores need to be calculated/updated
 
     // eslint-disable-next-line prefer-const
-    const deltas = computeDeltas(this.protoArray.indices, this.votes, justifiedBalances, justifiedBalances);
+    const deltas = computeDeltas(
+      this.protoArray.indices,
+      this.votes,
+      this.fcStore.justified.balances,
+      this.fcStore.justified.balances
+    );
 
     /**
      * The structure in line with deltas to propogate boost up the branch
@@ -209,7 +207,7 @@ export class ForkChoice implements IForkChoice {
     if (this.proposerBoostEnabled && this.proposerBoostRoot) {
       const proposerBoostScore =
         this.justifiedProposerBoostScore ??
-        computeProposerBoostScoreFromBalances(justifiedBalances, {
+        computeProposerBoostScoreFromBalances(this.fcStore.justified.balances, {
           slotsPerEpoch: SLOTS_PER_EPOCH,
           proposerScoreBoost: this.config.PROPOSER_SCORE_BOOST,
         });
@@ -220,13 +218,13 @@ export class ForkChoice implements IForkChoice {
     this.protoArray.applyScoreChanges({
       deltas,
       proposerBoost,
-      justifiedEpoch: this.fcStore.justifiedCheckpoint.epoch,
-      justifiedRoot: this.fcStore.justifiedCheckpoint.rootHex,
+      justifiedEpoch: this.fcStore.justified.checkpoint.epoch,
+      justifiedRoot: this.fcStore.justified.checkpoint.rootHex,
       finalizedEpoch: this.fcStore.finalizedCheckpoint.epoch,
       finalizedRoot: this.fcStore.finalizedCheckpoint.rootHex,
     });
 
-    const headRoot = this.protoArray.findHead(this.fcStore.justifiedCheckpoint.rootHex);
+    const headRoot = this.protoArray.findHead(this.fcStore.justified.checkpoint.rootHex);
     const headIndex = this.protoArray.indices.get(headRoot);
     if (headIndex === undefined) {
       throw new ForkChoiceError({
@@ -257,11 +255,11 @@ export class ForkChoice implements IForkChoice {
   }
 
   getJustifiedCheckpoint(): CheckpointWithHex {
-    return this.fcStore.justifiedCheckpoint;
+    return this.fcStore.justified.checkpoint;
   }
 
   getBestJustifiedCheckpoint(): CheckpointWithHex {
-    return this.fcStore.bestJustifiedCheckpoint;
+    return this.fcStore.bestJustified.checkpoint;
   }
 
   /**
@@ -280,13 +278,14 @@ export class ForkChoice implements IForkChoice {
    *
    * The supplied block **must** pass the `state_transition` function as it will not be run here.
    *
-   * `justifiedBalances` balances of justified state which is updated synchronously.
-   * This ensures that the forkchoice is never out of sync.
+   * @param currentJustifiedBalances Effective balances for fork-choice at current justified checkpoint.
+   * Balances must be provided out of band to prevent fork-choice from becoming async. Justified balances
+   * may not be available, and require expensive regen reading from DB and replaying blocks. The caller
+   * of updateHead() is responsible for fetching the justified balances from somewhere.
    */
   onBlock(
     block: allForks.BeaconBlock,
-    blockRootHex: RootHex,
-    state: BeaconStateAllForks,
+    state: CachedBeaconStateAllForks,
     blockDelaySec: number,
     currentSlot: Slot,
     executionStatus: ExecutionStatus
@@ -294,8 +293,9 @@ export class ForkChoice implements IForkChoice {
     // Ensure the store is up-to-date
     this.updateTime(currentSlot);
 
-    const {parentRoot, slot} = block;
-    const parentRootHex = toHexString(parentRoot);
+    const {slot} = block;
+    const parentRootHex = toHexString(block.parentRoot);
+    const blockRootHex = toHexString(state.config.getForkTypes(slot).BeaconBlock.hashTreeRoot(block));
 
     // Parent block must be known
     if (!this.protoArray.hasBlock(parentRootHex)) {
@@ -369,7 +369,7 @@ export class ForkChoice implements IForkChoice {
 
     const justifiedCheckpoint = toCheckpointWithHex(state.currentJustifiedCheckpoint);
     const finalizedCheckpoint = toCheckpointWithHex(state.finalizedCheckpoint);
-    this.updateCheckpoints(state.slot, {justifiedCheckpoint, finalizedCheckpoint});
+    this.updateCheckpoints(state.slot, state, {justifiedCheckpoint, finalizedCheckpoint});
 
     const targetSlot = computeStartSlotAtEpoch(computeEpochAtSlot(slot));
     const targetRootHex =
@@ -398,22 +398,30 @@ export class ForkChoice implements IForkChoice {
     });
   }
 
-  updateCheckpoints(stateSlot: Slot, checkpoints: CheckpointsWithHex): void {
+  /** Update checkpoints maybe if necessary, de-duplicates code */
+  updateCheckpoints(
+    stateSlot: Slot,
+    state: CachedBeaconStateAllForks,
+    {justifiedCheckpoint, finalizedCheckpoint}: CheckpointsWithHex
+  ): void {
     // Update justified checkpoint.
-    if (checkpoints.finalizedCheckpoint.epoch > this.fcStore.justifiedCheckpoint.epoch) {
-      if (checkpoints.justifiedCheckpoint.epoch > this.fcStore.bestJustifiedCheckpoint.epoch) {
-        this.fcStore.bestJustifiedCheckpoint = checkpoints.justifiedCheckpoint;
+    if (finalizedCheckpoint.epoch > this.fcStore.justified.checkpoint.epoch) {
+      if (justifiedCheckpoint.epoch > this.fcStore.bestJustified.checkpoint.epoch) {
+        this.fcStore.bestJustified = {
+          checkpoint: justifiedCheckpoint,
+          balances: this.getCurrentJustifiedBalances(state),
+        };
       }
 
-      if (this.shouldUpdateJustifiedCheckpoint(checkpoints.justifiedCheckpoint, stateSlot)) {
-        this.updateJustified(checkpoints.justifiedCheckpoint);
+      if (this.shouldUpdateJustifiedCheckpoint(justifiedCheckpoint, stateSlot)) {
+        this.updateJustified({checkpoint: justifiedCheckpoint, balances: this.getCurrentJustifiedBalances(state)});
       }
     }
 
     // Update finalized checkpoint.
-    if (checkpoints.finalizedCheckpoint.epoch > this.fcStore.finalizedCheckpoint.epoch) {
-      this.fcStore.finalizedCheckpoint = checkpoints.finalizedCheckpoint;
-      this.updateJustified(checkpoints.justifiedCheckpoint);
+    if (finalizedCheckpoint.epoch > this.fcStore.finalizedCheckpoint.epoch) {
+      this.fcStore.finalizedCheckpoint = finalizedCheckpoint;
+      this.updateJustified({checkpoint: justifiedCheckpoint, balances: this.getCurrentJustifiedBalances(state)});
     }
   }
 
@@ -544,11 +552,11 @@ export class ForkChoice implements IForkChoice {
   }
 
   getJustifiedBlock(): IProtoBlock {
-    const block = this.getBlockHex(this.fcStore.justifiedCheckpoint.rootHex);
+    const block = this.getBlockHex(this.fcStore.justified.checkpoint.rootHex);
     if (!block) {
       throw new ForkChoiceError({
         code: ForkChoiceErrorCode.MISSING_PROTO_ARRAY_BLOCK,
-        root: this.fcStore.justifiedCheckpoint.rootHex,
+        root: this.fcStore.justified.checkpoint.rootHex,
       });
     }
     return block;
@@ -699,8 +707,8 @@ export class ForkChoice implements IForkChoice {
     return executionStatus;
   }
 
-  private updateJustified(justifiedCheckpoint: CheckpointWithHex): void {
-    this.fcStore.justifiedCheckpoint = justifiedCheckpoint;
+  private updateJustified(checkpointWithBalances: CheckpointWithBalances): void {
+    this.fcStore.justified = checkpointWithBalances;
     // TODO: Is this necessary?
     this.justifiedProposerBoostScore = null;
   }
@@ -723,7 +731,7 @@ export class ForkChoice implements IForkChoice {
       return true;
     }
 
-    const justifiedSlot = computeStartSlotAtEpoch(this.fcStore.justifiedCheckpoint.epoch);
+    const justifiedSlot = computeStartSlotAtEpoch(this.fcStore.justified.checkpoint.epoch);
 
     // This sanity check is not in the spec, but the invariant is implied
     if (justifiedSlot >= stateSlot) {
@@ -749,7 +757,7 @@ export class ForkChoice implements IForkChoice {
     // A prior `if` statement protects against a justified_slot that is greater than
     // `state.slot`
     const justifiedAncestor = this.getAncestor(toHexString(newJustifiedCheckpoint.root), justifiedSlot);
-    if (justifiedAncestor !== this.fcStore.justifiedCheckpoint.rootHex) {
+    if (justifiedAncestor !== this.fcStore.justified.checkpoint.rootHex) {
       return false;
     }
 
@@ -974,21 +982,38 @@ export class ForkChoice implements IForkChoice {
       return;
     }
 
-    const {bestJustifiedCheckpoint, finalizedCheckpoint} = this.fcStore;
-
     // Update store.justified_checkpoint if a better checkpoint on the store.finalized_checkpoint chain
     //
     // Reason: A better justifiedCheckpoint from a block is only updated immediately if in the first 1/3 of the epoch
     // This addresses a bouncing attack, see https://ethresear.ch/t/prevention-of-bouncing-attack-on-ffg/6114
-    if (this.fcStore.bestJustifiedCheckpoint.epoch > this.fcStore.justifiedCheckpoint.epoch) {
+    if (this.fcStore.bestJustified.checkpoint.epoch > this.fcStore.justified.checkpoint.epoch) {
       // TODO: Is this check necessary? It checks that bestJustifiedCheckpoint is still descendant of finalized
       // From https://github.com/ChainSafe/lodestar/commit/6a0745e9db27dfce67b6e6c25bba452283dbbea9#
-      const finalizedSlot = computeStartSlotAtEpoch(finalizedCheckpoint.epoch);
-      const ancestorAtFinalizedSlot = this.getAncestor(bestJustifiedCheckpoint.rootHex, finalizedSlot);
-      if (ancestorAtFinalizedSlot === finalizedCheckpoint.rootHex) {
-        this.updateJustified(this.fcStore.bestJustifiedCheckpoint);
+      const finalizedSlot = computeStartSlotAtEpoch(this.fcStore.finalizedCheckpoint.epoch);
+      const ancestorAtFinalizedSlot = this.getAncestor(this.fcStore.bestJustified.checkpoint.rootHex, finalizedSlot);
+      if (ancestorAtFinalizedSlot === this.fcStore.finalizedCheckpoint.rootHex) {
+        this.updateJustified(this.fcStore.bestJustified);
       }
     }
+  }
+
+  /**
+   * Helper to derive effectiveBalanceIncrements from state.
+   * Assumes that for states where currentJustifiedCheckpoint has changed, it has only changed in the last 2 epochs
+   */
+  private getCurrentJustifiedBalances(state: CachedBeaconStateAllForks): EffectiveBalanceIncrements {
+    const epoch = state.currentJustifiedCheckpoint.epoch;
+    return state.epochCtx.getEffectiveBalanceIncrementsAtEpoch(epoch);
+
+    // switch (epoch) {
+    //   case state.epochCtx.epoch:
+    //     return state.epochCtx.effectiveBalanceIncrements;
+    //   case state.epochCtx.epoch - 1:
+    //     // TODO: Cache previous effectiveBalanceIncrements
+    //     return state.epochCtx.effectiveBalanceIncrements;
+    //   default:
+    //     throw Error(`Attempting to get balances at epoch ${epoch} for state at slot ${state.slot}`);
+    // }
   }
 }
 

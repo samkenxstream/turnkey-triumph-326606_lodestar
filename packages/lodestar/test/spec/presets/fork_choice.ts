@@ -3,9 +3,7 @@ import {
   computeEpochAtSlot,
   CachedBeaconStateAllForks,
   ZERO_HASH,
-  getEffectiveBalanceIncrementsZeroInactive,
   computeStartSlotAtEpoch,
-  EffectiveBalanceIncrements,
   BeaconStateAllForks,
   isBellatrixStateType,
   isBellatrixBlockBodyType,
@@ -27,13 +25,7 @@ import {
 import {phase0, allForks, bellatrix, ssz, RootHex} from "@chainsafe/lodestar-types";
 import {bnToNum} from "@chainsafe/lodestar-utils";
 import {SLOTS_PER_EPOCH} from "@chainsafe/lodestar-params";
-import {
-  ChainEventEmitter,
-  initializeForkChoice,
-  CheckpointStateCache,
-  toCheckpointHex,
-  toCheckpointKey,
-} from "../../../src/chain/index.js";
+import {ChainEventEmitter, initializeForkChoice, CheckpointStateCache} from "../../../src/chain/index.js";
 import {createCachedBeaconStateTest} from "../../utils/cachedBeaconState.js";
 import {testLogger} from "../../utils/logger.js";
 import {getConfig} from "../utils/getConfig.js";
@@ -256,27 +248,13 @@ function runStateTranstion(
   if (postEpoch > preEpoch) {
     cacheCheckpointState(postState, checkpointCache);
   }
+
   // same logic like in state transition https://github.com/ChainSafe/lodestar/blob/f6778740075fe2b75edf94d1db0b5691039cb500/packages/lodestar/src/chain/blocks/stateTransition.ts#L101
-  let justifiedBalances: EffectiveBalanceIncrements | undefined;
-  const checkpointHex = toCheckpointHex(postState.currentJustifiedCheckpoint);
-  const justifiedState = checkpointCache.get(checkpointHex);
-  if (
-    postState.currentJustifiedCheckpoint.epoch > forkchoice.getJustifiedCheckpoint().epoch ||
-    postState.finalizedCheckpoint.epoch > forkchoice.getFinalizedCheckpoint().epoch
-  ) {
-    if (!justifiedState) {
-      const checkpointHexKey = toCheckpointKey(checkpointHex);
-      const cachedCps = checkpointCache.dumpCheckpointKeys().join(", ");
-      throw Error(`No justifiedState for checkpoint ${checkpointHexKey}. Available: ${cachedCps}`);
-    }
-    justifiedBalances = getEffectiveBalanceIncrementsZeroInactive(justifiedState);
-  }
+  const currentSlot = forkchoice.getTime();
 
   try {
-    forkchoice.onBlock(signedBlock.message, postState, {
-      blockDelaySec,
-      justifiedBalances,
-    });
+    forkchoice.onBlock(signedBlock.message, postState, blockDelaySec, currentSlot, ExecutionStatus.PreMerge);
+
     for (const attestation of signedBlock.message.body.attestations) {
       try {
         const indexedAttestation = postState.epochCtx.getIndexedAttestation(attestation);

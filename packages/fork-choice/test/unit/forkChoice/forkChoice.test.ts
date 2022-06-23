@@ -50,7 +50,7 @@ describe("Forkchoice", function () {
     currentSlot: block.slot,
     justifiedCheckpoint: {epoch: genesisEpoch, root: fromHexString(finalizedRoot), rootHex: finalizedRoot},
     finalizedCheckpoint: {epoch: genesisEpoch, root: fromHexString(finalizedRoot), rootHex: finalizedRoot},
-    bestJustifiedCheckpoint: {epoch: genesisEpoch, root: fromHexString(finalizedRoot), rootHex: finalizedRoot},
+    bestJustified: {epoch: genesisEpoch, root: fromHexString(finalizedRoot), rootHex: finalizedRoot},
   };
 
   it("getAllAncestorBlocks", function () {

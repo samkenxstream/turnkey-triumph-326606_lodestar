@@ -51,7 +51,7 @@ export function initializeForkChoice(
   return new ForkChoice(
     config,
 
-    new ForkChoiceStore(currentSlot, justifiedCheckpoint, finalizedCheckpoint, {
+    new ForkChoiceStore(currentSlot, justifiedCheckpoint, justifiedBalances, finalizedCheckpoint, {
       onJustified: (cp) => emitter.emit(ChainEvent.forkChoiceJustified, cp),
       onFinalized: (cp) => emitter.emit(ChainEvent.forkChoiceFinalized, cp),
     }),
@@ -75,7 +75,6 @@ export function initializeForkChoice(
         : {executionPayloadBlockHash: null, executionStatus: ExecutionStatus.PreMerge}),
     }),
 
-    justifiedBalances,
     proposerBoostEnabled,
     metrics
   );

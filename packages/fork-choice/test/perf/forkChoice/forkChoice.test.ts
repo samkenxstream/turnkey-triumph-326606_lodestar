@@ -41,7 +41,7 @@ describe("ForkChoice", () => {
       currentSlot: genesisSlot,
       justifiedCheckpoint: {epoch: genesisEpoch, root: fromHexString(finalizedRoot), rootHex: finalizedRoot},
       finalizedCheckpoint: {epoch: genesisEpoch, root: fromHexString(finalizedRoot), rootHex: finalizedRoot},
-      bestJustifiedCheckpoint: {epoch: genesisEpoch, root: fromHexString(finalizedRoot), rootHex: finalizedRoot},
+      bestJustified: {epoch: genesisEpoch, root: fromHexString(finalizedRoot), rootHex: finalizedRoot},
     };
 
     forkchoice = new ForkChoice(config, fcStore, protoArr, getEffectiveBalanceIncrementsZeroed(0), false);

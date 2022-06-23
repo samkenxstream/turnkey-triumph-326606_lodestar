@@ -120,10 +120,13 @@ export class EpochContext {
   currentShuffling: IEpochShuffling;
   /** Same as previousShuffling */
   nextShuffling: IEpochShuffling;
+
   /**
    * Effective balances, for altair processAttestations()
    */
   effectiveBalanceIncrements: EffectiveBalanceIncrements;
+  effectiveBalanceIncrementsPrevEpoch: EffectiveBalanceIncrements;
+
   syncParticipantReward: number;
   syncProposerReward: number;
   /**
@@ -174,6 +177,7 @@ export class EpochContext {
     currentShuffling: IEpochShuffling;
     nextShuffling: IEpochShuffling;
     effectiveBalanceIncrements: EffectiveBalanceIncrements;
+    effectiveBalanceIncrementsPrevEpoch: EffectiveBalanceIncrements;
     syncParticipantReward: number;
     syncProposerReward: number;
     baseRewardPerIncrement: number;
@@ -195,6 +199,7 @@ export class EpochContext {
     this.currentShuffling = data.currentShuffling;
     this.nextShuffling = data.nextShuffling;
     this.effectiveBalanceIncrements = data.effectiveBalanceIncrements;
+    this.effectiveBalanceIncrementsPrevEpoch = data.effectiveBalanceIncrementsPrevEpoch;
     this.syncParticipantReward = data.syncParticipantReward;
     this.syncProposerReward = data.syncProposerReward;
     this.baseRewardPerIncrement = data.baseRewardPerIncrement;
@@ -349,6 +354,8 @@ export class EpochContext {
       currentShuffling,
       nextShuffling,
       effectiveBalanceIncrements,
+      // TODO: Assume they are the same
+      effectiveBalanceIncrementsPrevEpoch: effectiveBalanceIncrements,
       syncParticipantReward,
       syncProposerReward,
       baseRewardPerIncrement,
@@ -384,6 +391,7 @@ export class EpochContext {
       // Uint8Array, requires cloning, but it is cloned only when necessary before an epoch transition
       // See EpochContext.beforeEpochTransition()
       effectiveBalanceIncrements: this.effectiveBalanceIncrements,
+      effectiveBalanceIncrementsPrevEpoch: this.effectiveBalanceIncrementsPrevEpoch,
       // Basic types (numbers) cloned implicitly
       syncParticipantReward: this.syncParticipantReward,
       syncProposerReward: this.syncProposerReward,
@@ -465,6 +473,7 @@ export class EpochContext {
   }
 
   beforeEpochTransition(): void {
+    this.effectiveBalanceIncrementsPrevEpoch = this.effectiveBalanceIncrements;
     // Clone before being mutated in processEffectiveBalanceUpdates
     this.effectiveBalanceIncrements = this.effectiveBalanceIncrements.slice(0);
   }
@@ -717,6 +726,18 @@ export class EpochContext {
     }
 
     this.effectiveBalanceIncrements[index] = Math.floor(effectiveBalance / EFFECTIVE_BALANCE_INCREMENT);
+  }
+
+  getEffectiveBalanceIncrementsAtEpoch(epoch: number): EffectiveBalanceIncrements {
+    switch (epoch) {
+      case this.epoch:
+        return this.effectiveBalanceIncrements;
+      case this.epoch - 1:
+        // TODO: Cache previous effectiveBalanceIncrements
+        return this.effectiveBalanceIncrementsPrevEpoch;
+      default:
+        throw Error(`EffectiveBalanceIncrements for epoch ${epoch}, ctx epoch ${this.epoch}`);
+    }
   }
 }
 

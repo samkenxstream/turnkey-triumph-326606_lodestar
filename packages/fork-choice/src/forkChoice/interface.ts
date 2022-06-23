@@ -1,5 +1,4 @@
-import {EffectiveBalanceIncrements} from "@chainsafe/lodestar-beacon-state-transition";
-import {BeaconStateAllForks} from "@chainsafe/lodestar-beacon-state-transition";
+import {CachedBeaconStateAllForks, EffectiveBalanceIncrements} from "@chainsafe/lodestar-beacon-state-transition";
 import {Epoch, Slot, ValidatorIndex, phase0, allForks, Root, RootHex} from "@chainsafe/lodestar-types";
 import {IProtoBlock, ExecutionStatus} from "../protoArray/interface.js";
 import {CheckpointWithHex} from "./store.js";
@@ -32,14 +31,7 @@ export interface IForkChoice {
    */
   getHeadRoot(): RootHex;
   getHead(): IProtoBlock;
-  /**
-   * Runs fork-choice and caches head result internally.
-   * @param justifiedBalances Effective balances for fork-choice at current justified checkpoint.
-   * Balances must be provided out of band to prevent fork-choice from becoming async. Justified balances
-   * may not be available, and require expensive regen reading from DB and replaying blocks. The caller
-   * of updateHead() is responsible for fetching the justified balances from somewhere.
-   */
-  updateHead(justifiedBalances: EffectiveBalanceIncrements): IProtoBlock;
+  updateHead(): IProtoBlock;
   /**
    * Retrieves all possible chain heads (leaves of fork choice tree).
    */
@@ -62,13 +54,17 @@ export interface IForkChoice {
    *
    * The supplied block **must** pass the `state_transition` function as it will not be run here.
    *
-   * `preCachedData` includes data necessary for validation included in the spec but some data is
+   * extra arguments includes data necessary for validation included in the spec but some data is
    * pre-fetched in advance to keep the fork-choice fully syncronous
+   *
+   * @param currentJustifiedBalances Effective balances for fork-choice at current justified checkpoint.
+   * Balances must be provided out of band to prevent fork-choice from becoming async. Justified balances
+   * may not be available, and require expensive regen reading from DB and replaying blocks. The caller
+   * of updateHead() is responsible for fetching the justified balances from somewhere.
    */
   onBlock(
     block: allForks.BeaconBlock,
-    blockRootHex: RootHex,
-    state: BeaconStateAllForks,
+    state: CachedBeaconStateAllForks,
     blockDelaySec: number,
     currentSlot: Slot,
     executionStatus: ExecutionStatus

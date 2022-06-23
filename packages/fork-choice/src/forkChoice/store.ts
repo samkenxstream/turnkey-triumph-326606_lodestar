@@ -1,3 +1,4 @@
+import {EffectiveBalanceIncrements} from "@chainsafe/lodestar-beacon-state-transition";
 import {phase0, Slot, RootHex} from "@chainsafe/lodestar-types";
 import {toHexString} from "@chainsafe/ssz";
 
@@ -22,10 +23,15 @@ export type CheckpointWithHex = phase0.Checkpoint & {rootHex: RootHex};
  */
 export interface IForkChoiceStore {
   currentSlot: Slot;
-  justifiedCheckpoint: CheckpointWithHex;
   finalizedCheckpoint: CheckpointWithHex;
-  bestJustifiedCheckpoint: CheckpointWithHex;
+  justified: CheckpointWithBalances;
+  bestJustified: CheckpointWithBalances;
 }
+
+export type CheckpointWithBalances = {
+  checkpoint: CheckpointWithHex;
+  balances: EffectiveBalanceIncrements;
+};
 
 /* eslint-disable @typescript-eslint/naming-convention, @typescript-eslint/member-ordering */
 
@@ -33,32 +39,36 @@ export interface IForkChoiceStore {
  * IForkChoiceStore implementer which emits forkChoice events on updated justified and finalized checkpoints.
  */
 export class ForkChoiceStore implements IForkChoiceStore {
-  bestJustifiedCheckpoint: CheckpointWithHex;
-  private _justifiedCheckpoint: CheckpointWithHex;
+  bestJustified: CheckpointWithBalances;
+  private _justified: CheckpointWithBalances;
   private _finalizedCheckpoint: CheckpointWithHex;
 
   constructor(
     public currentSlot: Slot,
     justifiedCheckpoint: phase0.Checkpoint,
+    justifiedBalances: EffectiveBalanceIncrements,
     finalizedCheckpoint: phase0.Checkpoint,
     private readonly events?: {
       onJustified: (cp: CheckpointWithHex) => void;
       onFinalized: (cp: CheckpointWithHex) => void;
     }
   ) {
-    this._justifiedCheckpoint = toCheckpointWithHex(justifiedCheckpoint);
+    this._justified = {
+      checkpoint: toCheckpointWithHex(justifiedCheckpoint),
+      balances: justifiedBalances,
+    };
     this._finalizedCheckpoint = toCheckpointWithHex(finalizedCheckpoint);
-    this.bestJustifiedCheckpoint = this._justifiedCheckpoint;
+    this.bestJustified = this._justified;
   }
 
-  get justifiedCheckpoint(): CheckpointWithHex {
-    return this._justifiedCheckpoint;
+  get justified(): CheckpointWithBalances {
+    return this._justified;
   }
-  set justifiedCheckpoint(checkpoint: CheckpointWithHex) {
-    const cp = toCheckpointWithHex(checkpoint);
-    this._justifiedCheckpoint = cp;
-    this.events?.onJustified(cp);
+  set justified(checkpointWithBalances: CheckpointWithBalances) {
+    this._justified = checkpointWithBalances;
+    this.events?.onJustified(checkpointWithBalances.checkpoint);
   }
+
   get finalizedCheckpoint(): CheckpointWithHex {
     return this._finalizedCheckpoint;
   }
