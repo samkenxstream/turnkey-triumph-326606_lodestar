@@ -22,6 +22,7 @@ import {IMetrics} from "../metrics/index.js";
 import {IEth1ForBlockProduction} from "../eth1/index.js";
 import {IExecutionEngine, IExecutionBuilder} from "../execution/index.js";
 import {ensureDir, writeIfNotExist} from "../util/file.js";
+import {JobItemQueue} from "../util/queue/itemQueue.js";
 import {CheckpointStateCache, StateContextCache} from "./stateCache/index.js";
 import {BlockProcessor, PartiallyVerifiedBlockFlags} from "./blocks/index.js";
 import {IBeaconClock, LocalClock} from "./clock/index.js";
@@ -47,13 +48,15 @@ import {
   OpPool,
 } from "./opPools/index.js";
 import {LightClientServer} from "./lightClient/index.js";
-import {Archiver} from "./archiver/index.js";
+import {archiveBlocks, maybeArchiveState, updateBackfillRange} from "./archiver/index.js";
 import {PrepareNextSlotScheduler} from "./prepareNextSlot.js";
 import {ReprocessController} from "./reprocess.js";
 import {SeenAggregatedAttestations} from "./seenCache/seenAggregateAndProof.js";
 import {SeenBlockAttesters} from "./seenCache/seenBlockAttesters.js";
 import {BeaconProposerCache} from "./beaconProposerCache.js";
 import {ChainEvent} from "./index.js";
+
+const PROCESS_FINALIZED_CHECKPOINT_QUEUE_LEN = 256;
 
 export class BeaconChain implements IBeaconChain {
   readonly genesisTime: UintNum64;
@@ -103,7 +106,7 @@ export class BeaconChain implements IBeaconChain {
   protected readonly logger: ILogger;
   protected readonly metrics: IMetrics | null;
   protected readonly opts: IChainOptions;
-  private readonly archiver: Archiver;
+  private readonly archiveFinalizedQueue: JobItemQueue<[CheckpointWithHex], void>;
   private abortController = new AbortController();
 
   constructor(
@@ -220,6 +223,11 @@ export class BeaconChain implements IBeaconChain {
       signal
     );
 
+    this.archiveFinalizedQueue = new JobItemQueue<[CheckpointWithHex], void>(this.archiveFinalizedStateAndBlocks, {
+      maxLength: PROCESS_FINALIZED_CHECKPOINT_QUEUE_LEN,
+      signal,
+    });
+
     this.forkChoice = forkChoice;
     this.clock = clock;
     this.regen = regen;
@@ -229,7 +237,6 @@ export class BeaconChain implements IBeaconChain {
     this.emitter = emitter;
     this.lightClientServer = lightClientServer;
 
-    this.archiver = new Archiver(db, this, logger, signal, opts);
     new PrepareNextSlotScheduler(this, this.config, metrics, this.logger, signal);
 
     metrics?.opPool.aggregatedAttestationPoolSize.addCollect(() => this.onScrapeMetrics());
@@ -275,8 +282,14 @@ export class BeaconChain implements IBeaconChain {
 
   /** Persist in-memory data to the DB. Call at least once before stopping the process */
   async persistToDisk(): Promise<void> {
-    await this.archiver.persistToDisk();
     await this.opPool.toPersisted(this.db);
+
+    // TODO: Is this necessary? We archive the current finalized state on finalization
+    // TODO: Should it error if the state is not available? This is a shutdown sequence, nothing todo
+    const finalizedState = this.checkpointStateCache.get(this.forkChoice.getFinalizedCheckpoint());
+    if (finalizedState) {
+      await this.db.stateArchive.put(finalizedState.slot, finalizedState);
+    }
   }
 
   getHeadState(): CachedBeaconStateAllForks {
@@ -439,7 +452,7 @@ export class BeaconChain implements IBeaconChain {
     this.logger.verbose("Fork choice justified", {epoch: cp.epoch, root: cp.rootHex});
   }
 
-  private onForkChoiceFinalized(this: BeaconChain, cp: CheckpointWithHex): void {
+  private async onForkChoiceFinalized(this: BeaconChain, cp: CheckpointWithHex): Promise<void> {
     this.logger.verbose("Fork choice finalized", {epoch: cp.epoch, root: cp.rootHex});
     this.seenBlockProposers.prune(computeStartSlotAtEpoch(cp.epoch));
 
@@ -447,6 +460,54 @@ export class BeaconChain implements IBeaconChain {
     const headState = this.stateCache.get(this.forkChoice.getHead().stateRoot);
     if (headState) {
       this.opPool.pruneAll(headState);
+    }
+
+    if (!this.opts.disableArchiveOnCheckpoint) {
+      // Archive state and blocks
+      // TODO: When is the best time to perform this actions?
+      // TODO: Only perform one archive at a time
+      await this.archiveFinalizedQueue.push(cp);
+    }
+  }
+
+  private async archiveFinalizedStateAndBlocks(finalized: CheckpointWithHex): Promise<void> {
+    try {
+      const finalizedEpoch = finalized.epoch;
+      const finalizedBlock = this.forkChoice.getBlockHex(finalized.rootHex);
+      this.logger.verbose("Start processing finalized checkpoint", {epoch: finalizedEpoch});
+
+      await archiveBlocks(this.db, this.forkChoice, this.lightClientServer, this.logger, finalized);
+
+      // should be after ArchiveBlocksTask to handle restart cleanly
+      const {archivedState, deletedEpochs} = await maybeArchiveState(this.db, this.checkpointStateCache, finalized);
+      if (archivedState) {
+        this.logger.verbose("Archived finalized state", {
+          epoch: finalized.epoch,
+          deletedEpochs: deletedEpochs.join(","),
+        });
+      } else {
+        this.logger.verbose("Archive finalized state skipped", {epoch: finalized.epoch});
+      }
+
+      this.checkpointStateCache.pruneFinalized(finalizedEpoch);
+      this.stateCache.deleteAllBeforeEpoch(finalizedEpoch);
+      // tasks rely on extended fork choice
+      this.forkChoice.prune(finalized.rootHex);
+
+      if (finalizedBlock) {
+        await updateBackfillRange(
+          {db: this.db, logger: this.logger},
+          finalizedBlock,
+          finalized,
+          this.anchorStateLatestBlockSlot
+        );
+      } else {
+        // NOTE: This should never happen
+      }
+
+      this.logger.verbose("Finish processing finalized checkpoint", {epoch: finalizedEpoch});
+    } catch (e) {
+      this.logger.error("Error processing finalized checkpoint", {epoch: finalized.epoch}, e as Error);
     }
   }
 
