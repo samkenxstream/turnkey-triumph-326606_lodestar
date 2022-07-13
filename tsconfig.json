@@ -4,7 +4,14 @@
     "emitDeclarationOnly": false,
     "incremental": false,
     // Required to run benchmark command from root directory
-    "typeRoots": ["node_modules/@types", "./types"],
-    "noEmit": true
+    "typeRoots": [
+      "node_modules/@types",
+      "./types"
+    ],
+    "types": [
+      "cypress"
+    ],
+    "noEmit": false,
+    "noEmitOnError": false,
   }
 }
