@@ -39,6 +39,14 @@ const expectedPreValidationFC: ValidationTestCase[] = [
   {root: "3C", bestChild: undefined, bestDescendant: undefined, executionStatus: ExecutionStatus.Syncing},
 ];
 
+/**
+ * Set up the following forkchoice  (~~ parent not in forkchoice, possibly bogus/NA)
+ *
+ *  0 (PreMerge) <- 1A (Syncing) <- 2A (Syncing) <- 3A (Syncing)
+ *                               ^- 2B (Syncing) <- 3B (Syncing)
+ *                               ~~ 2C (Syncing) <- 3C (Syncing)
+ */
+
 function setupForkChoice(): ProtoArray {
   const fc = ProtoArray.initialize({
     slot: 0,
@@ -89,12 +97,23 @@ function setupForkChoice(): ProtoArray {
 describe("executionStatus / normal updates", () => {
   const fc = setupForkChoice();
 
+  /**
+   *  0 (PreMerge) <- 1A (Syncing) <- 2A (Syncing) <- 3A (Syncing)
+   *                               ^- 2B (Syncing) <- 3B (Syncing)
+   *                               ~~ 2C (Syncing) <- 3C (Syncing)
+   */
   const preValidation = collectProtoarrayValidationStatus(fc);
   it("preValidation forkchoice setup should be correct", () => {
     expect(preValidation).to.be.deep.equal(expectedPreValidationFC);
   });
 
-  // Invalidate 3C with LVH on 2C which stays in Syncing
+  /**
+   * Invalidate 3C with LVH on 2C which stays in Syncing
+   *
+   *  0 (PreMerge) <- 1A (Syncing) <- 2A (Syncing) <- 3A (Syncing)
+   *                               ^- 2B (Syncing) <- 3B (Syncing)
+   *                               ~~ 2C (Syncing) <- 3C (Invalid)
+   */
   fc.validateLatestHash({
     executionStatus: ExecutionStatus.Invalid,
     latestValidExecHash: "2C",
@@ -155,7 +174,13 @@ describe("executionStatus / normal updates", () => {
     ]);
   });
 
-  // Validate 3B, 2B, 1A (premerge)
+  /**
+   * Validate 3B, 2B, 1A (premerge)
+   *
+   *  0 (PreMerge) <- 1A (Valid)   <- 2A (Syncing) <- 3A (Syncing)
+   *                               ^- 2B (Valid)   <- 3B (Valid)
+   *                               ~~ 2C (Syncing) <- 3C (Invalid)
+   */
   fc.validateLatestHash({
     executionStatus: ExecutionStatus.Valid,
     latestValidExecHash: "3B",
@@ -214,6 +239,14 @@ describe("executionStatus / normal updates", () => {
       },
     ]);
   });
+
+  /**
+   * Invalidate 3A, 2A with 2A loosing its bestChild, bestDescendant
+   *
+   *  0 (PreMerge) <- 1A (Valid)   <- 2A (Invalid) <- 3A (Invalid)
+   *                               ^- 2B (Valid)   <- 3B (Valid)
+   *                               ~~ 2C (Syncing) <- 3C (Invalid)
+   */
 
   fc.validateLatestHash({
     executionStatus: ExecutionStatus.Invalid,
@@ -275,21 +308,35 @@ describe("executionStatus / normal updates", () => {
   });
 });
 
-describe("executionStatus / invalidate all postmerge blocks", () => {
+describe("executionStatus / invalidate all postmerge chain", () => {
   const fc = setupForkChoice();
 
+  /**
+   * Set up the following forkchoice  (~~ parent not in forkchoice, possibly bogus/NA)
+   *
+   *  0 (PreMerge) <- 1A (Syncing) <- 2A (Syncing) <- 3A (Syncing)
+   *                               ^- 2B (Syncing) <- 3B (Syncing)
+   *                               ~~ 2C (Syncing) <- 3C (Syncing)
+   */
   const preValidation = collectProtoarrayValidationStatus(fc);
   it("preValidation forkchoice setup should be correct", () => {
     expect(preValidation).to.be.deep.equal(expectedPreValidationFC);
   });
 
+  /**
+   * All post merge blocks should be invalidated except Cs
+   *
+   *  0 (PreMerge) <- 1A (Invalid) <- 2A (Invalid) <- 3A (Invalid)
+   *                               ^- 2B (Invalid) <- 3B (Invalid)
+   *                               ~~ 2C (Syncing) <- 3C (Syncing)
+   */
   fc.validateLatestHash({
     executionStatus: ExecutionStatus.Invalid,
     latestValidExecHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
     invalidateTillBlockHash: "3B",
   });
   const postMergeInvalidated = collectProtoarrayValidationStatus(fc);
-  it("all post merge blocks should be invalidated", () => {
+  it("all post merge blocks should be invalidated except Cs", () => {
     expect(postMergeInvalidated).to.be.deep.equal([
       {
         root: "0",
@@ -329,15 +376,15 @@ describe("executionStatus / invalidate all postmerge blocks", () => {
       },
       {
         root: "2C",
-        bestChild: undefined,
-        bestDescendant: undefined,
-        executionStatus: "Invalid",
+        bestChild: "3C",
+        bestDescendant: "3C",
+        executionStatus: "Syncing",
       },
       {
         root: "3C",
         bestChild: undefined,
         bestDescendant: undefined,
-        executionStatus: "Invalid",
+        executionStatus: "Syncing",
       },
     ]);
   });

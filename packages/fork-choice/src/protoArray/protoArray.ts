@@ -285,22 +285,51 @@ export class ProtoArray {
       }
       /**
        * There are following invalidation scenarios for latestValidHashIndex
-       *  1. If the LVH is 0x00..00, then all the post merge blocks are invalid,
-       *     represented here with latestValidHashIndex = -1 assignment
+       *  1. If the LVH is 0x00..00, then all the post merge ancestors of the invalidateTillIndex
+       *     are invalid.
+       *
+       *     If no such ancestor is in forkchoice, represented by -1, the entire chain gets
+       *     invalidated and as consequence, the subtree. However the disjoint subtrees will
+       *     still stay valid
+       *
        *  2. If the LVH is found, so we just need to traverse up from invalidateTillIndex
-       *     and invalidate parents
-       *  3. If the LVH is not found, represented with latestValidHashIndex=undefined,
+       *     and invalidate parents.
+       *
+       *  3. If the LVH is null or not found, represented with latestValidHashIndex=undefined,
        *     then just invalidate the invalid_payload and bug out.
+       *
+       *     Ideally in not found scenario we should invalidate the entire chain upwards, but
+       *     it is possible (and observed in the testnets) that the EL was
+       *
+       *       i) buggy: that the LVH was not really the parent of the invalid block, but on
+       *          some side chain
+       *       ii) lazy: that invalidation was result of simple check and the EL just responded
+       *           with a bogus LVH
+       *
+       *     So we will just invalidate the current payload and let future responses take care
+       *     to be as robust as possible.
        */
       let latestValidHashIndex: number | undefined = undefined;
-      if (latestValidExecHash === ZERO_HASH_HEX) {
-        latestValidHashIndex = -1;
-      } else {
-        for (let i = this.nodes.length - 1; i >= 0; i--) {
-          if (this.nodes[i].executionPayloadBlockHash === latestValidExecHash) {
-            latestValidHashIndex = i;
+      if (latestValidExecHash !== null) {
+        let nodeIndex = this.nodes[invalidateTillIndex].parent;
+
+        while (nodeIndex !== undefined && nodeIndex >= 0) {
+          const node = this.getNodeFromIndex(nodeIndex);
+          if (
+            (node.executionStatus === ExecutionStatus.PreMerge && latestValidExecHash === ZERO_HASH_HEX) ||
+            node.executionPayloadBlockHash === latestValidExecHash
+          ) {
+            latestValidHashIndex = nodeIndex;
             break;
           }
+          nodeIndex = node.parent;
+        }
+
+        // Even if we haven't found the latestValidHashIndex, EL has signalled here that the
+        // entire chain is invalid with this special response and hence we can safely
+        // invalidate the chain and its subtree via setting latestValidHashIndex as -1
+        if (latestValidHashIndex === undefined && latestValidExecHash === ZERO_HASH_HEX) {
+          latestValidHashIndex = -1;
         }
       }
 
@@ -367,25 +396,28 @@ export class ProtoArray {
      */
     let invalidateAll = false;
 
-    if (latestValidHashIndex !== -1) {
-      let invalidateIndex: number | undefined = invalidateTillIndex;
-      const invalidateUntilIndex = latestValidHashIndex ?? invalidateTillIndex - 1;
-      while (invalidateIndex !== undefined && invalidateIndex > invalidateUntilIndex) {
-        const invalidNode = this.getNodeFromIndex(invalidateIndex);
-        if (
-          invalidNode.executionStatus !== ExecutionStatus.Syncing &&
-          invalidNode.executionStatus !== ExecutionStatus.Invalid
-        ) {
-          // This is another catastrophe, and indicates consensus failure
-          // the entire forkchoice should be invalidated
-          invalidateAll = true;
-        }
-        invalidNode.executionStatus = ExecutionStatus.Invalid;
-        // Time to propagate up
-        invalidateIndex = invalidNode.parent;
+    let invalidateIndex: number = invalidateTillIndex;
+    // If latestValidHashIndex is undefined, i.e. we didn't find the LVH, only
+    // invalidate invalidateTillIndex
+    const invalidateUntilIndex = latestValidHashIndex ?? invalidateTillIndex - 1;
+
+    while (invalidateIndex > invalidateUntilIndex) {
+      const invalidNode = this.getNodeFromIndex(invalidateIndex);
+      if (
+        invalidNode.executionStatus !== ExecutionStatus.Syncing &&
+        invalidNode.executionStatus !== ExecutionStatus.Invalid
+      ) {
+        // This is a catastrophe, and indicates consensus failure
+        // the entire forkchoice should be invalidated
+        invalidateAll = true;
       }
-    } else {
-      invalidateAll = true;
+      invalidNode.executionStatus = ExecutionStatus.Invalid;
+      if (invalidNode.parent === undefined) {
+        // We have invalidated the entire chain in forkchoice, so time to exit and
+        // move to phase 2
+        break;
+      }
+      invalidateIndex = invalidNode.parent;
     }
 
     // Pass 2: mark all children of invalid nodes as invalid
