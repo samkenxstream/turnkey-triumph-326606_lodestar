@@ -395,6 +395,154 @@ describe("executionStatus / invalidate all postmerge chain", () => {
   });
 });
 
+describe("executionStatus / invalidate all forkchoice if we invalidate previous valid", () => {
+  const fc = setupForkChoice();
+
+  /**
+   * Set up the following forkchoice  (~~ parent not in forkchoice, possibly bogus/NA)
+   *
+   *  0 (PreMerge) <- 1A (Syncing) <- 2A (Syncing) <- 3A (Syncing)
+   *                               ^- 2B (Syncing) <- 3B (Syncing)
+   *                               ~~ 2C (Syncing) <- 3C (Syncing)
+   */
+  const preValidation = collectProtoarrayValidationStatus(fc);
+  it("preValidation forkchoice setup should be correct", () => {
+    expect(preValidation).to.be.deep.equal(expectedPreValidationFC);
+  });
+
+  /**
+   * Validate 3B, 2B, 1A (premerge)
+   *
+   *  0 (PreMerge) <- 1A (Valid)   <- 2A (Syncing) <- 3A (Syncing)
+   *                               ^- 2B (Valid)   <- 3B (Valid)
+   *                               ~~ 2C (Syncing) <- 3C (Syncing)
+   */
+  fc.validateLatestHash({
+    executionStatus: ExecutionStatus.Valid,
+    latestValidExecHash: "3B",
+    invalidateTillBlockHash: null,
+  });
+  const validate3B2B1A = collectProtoarrayValidationStatus(fc);
+  it("Validate 3B, 2B, 1A", () => {
+    expect(validate3B2B1A).to.be.deep.equal([
+      {
+        root: "0",
+        bestChild: "1A",
+        bestDescendant: "3B",
+        executionStatus: ExecutionStatus.PreMerge,
+      },
+      {
+        root: "1A",
+        bestChild: "2B",
+        bestDescendant: "3B",
+        executionStatus: "Valid",
+      },
+      {
+        root: "2A",
+        bestChild: "3A",
+        bestDescendant: "3A",
+        executionStatus: "Syncing",
+      },
+      {
+        root: "3A",
+        bestChild: undefined,
+        bestDescendant: undefined,
+        executionStatus: "Syncing",
+      },
+      {
+        root: "2B",
+        bestChild: "3B",
+        bestDescendant: "3B",
+        executionStatus: "Valid",
+      },
+      {
+        root: "3B",
+        bestChild: undefined,
+        bestDescendant: undefined,
+        executionStatus: "Valid",
+      },
+      {
+        root: "2C",
+        bestChild: "3C",
+        bestDescendant: "3C",
+        executionStatus: "Syncing",
+      },
+      {
+        root: "3C",
+        bestChild: undefined,
+        bestDescendant: undefined,
+        executionStatus: "Syncing",
+      },
+    ]);
+  });
+
+  /**
+   * entire forkchoice should be invalidated because of buggy CL response
+   *
+   *  0 (PreMerge) <- 1A (Invalid) <- 2A (Invalid) <- 3A (Invalid)
+   *                               ^- 2B (Invalid) <- 3B (Invalid)
+   *                               ~~ 2C (Invalid) <- 3C (Invalid)
+   */
+  fc.validateLatestHash({
+    executionStatus: ExecutionStatus.Invalid,
+    latestValidExecHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+    invalidateTillBlockHash: "3B",
+  });
+  const postMergeInvalidated = collectProtoarrayValidationStatus(fc);
+  it("entire forkchoice should be invalidated because of buggy CL response", () => {
+    expect(postMergeInvalidated).to.be.deep.equal([
+      {
+        root: "0",
+        bestChild: undefined,
+        bestDescendant: undefined,
+        executionStatus: ExecutionStatus.PreMerge,
+      },
+      {
+        root: "1A",
+        bestChild: undefined,
+        bestDescendant: undefined,
+        executionStatus: "Invalid",
+      },
+      {
+        root: "2A",
+        bestChild: undefined,
+        bestDescendant: undefined,
+        executionStatus: "Invalid",
+      },
+      {
+        root: "3A",
+        bestChild: undefined,
+        bestDescendant: undefined,
+        executionStatus: "Invalid",
+      },
+      {
+        root: "2B",
+        bestChild: undefined,
+        bestDescendant: undefined,
+        executionStatus: "Invalid",
+      },
+      {
+        root: "3B",
+        bestChild: undefined,
+        bestDescendant: undefined,
+        executionStatus: "Invalid",
+      },
+      {
+        root: "2C",
+        bestChild: undefined,
+        bestDescendant: undefined,
+        executionStatus: "Invalid",
+      },
+      {
+        root: "3C",
+        bestChild: undefined,
+        bestDescendant: undefined,
+        executionStatus: "Invalid",
+      },
+    ]);
+  });
+});
+
 function collectProtoarrayValidationStatus(fcArray: ProtoArray): ValidationTestCase[] {
   const expectedForkChoice: ValidationTestCase[] = [];
 
