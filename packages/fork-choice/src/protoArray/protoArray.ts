@@ -253,14 +253,19 @@ export class ProtoArray {
 
     if (execResponse.executionStatus === ExecutionStatus.Valid) {
       const {latestValidExecHash} = execResponse;
-      let latestValidHashIndex = this.nodes.length - 1;
+      // We use -1 for denoting not found
+      let latestValidHashIndex = -1;
 
-      for (; latestValidHashIndex >= 0; latestValidHashIndex--) {
-        if (this.nodes[latestValidHashIndex].executionPayloadBlockHash === latestValidExecHash) {
+      for (let nodeIndex = this.nodes.length - 1; nodeIndex >= 0; nodeIndex--) {
+        if (this.nodes[nodeIndex].executionPayloadBlockHash === latestValidExecHash) {
+          latestValidHashIndex = nodeIndex;
           // We found the block corresponding to latestValidHashIndex, exit the loop
           break;
         }
       }
+
+      // We are trying to be as forgiving as possible here because ideally latestValidHashIndex
+      // should be found in the forkchoice
       if (latestValidHashIndex >= 0) {
         this.propagateValidExecutionStatusByIndex(latestValidHashIndex);
       }
