@@ -20,7 +20,14 @@ import {
 import {IChainConfig, IChainForkConfig} from "@lodestar/config";
 
 import {computeDeltas} from "../protoArray/computeDeltas.js";
-import {HEX_ZERO_HASH, VoteTracker, ProtoBlock, ExecutionStatus, LVHExecResponse} from "../protoArray/interface.js";
+import {
+  HEX_ZERO_HASH,
+  VoteTracker,
+  ProtoBlock,
+  ExecutionStatus,
+  MaybeValidExecutionStatus,
+  LVHExecResponse,
+} from "../protoArray/interface.js";
 import {ProtoArray} from "../protoArray/protoArray.js";
 
 import {IForkChoiceMetrics} from "../metrics.js";
@@ -267,7 +274,7 @@ export class ForkChoice implements IForkChoice {
     block: allForks.BeaconBlock,
     state: CachedBeaconStateAllForks,
     blockDelaySec: number,
-    executionStatus: ExecutionStatus
+    executionStatus: MaybeValidExecutionStatus
   ): void {
     const {parentRoot, slot} = block;
     const parentRootHex = toHexString(parentRoot);
@@ -679,13 +686,15 @@ export class ForkChoice implements IForkChoice {
     this.protoArray.findHead(this.fcStore.justified.checkpoint.rootHex);
   }
 
-  private getPreMergeExecStatus(executionStatus: ExecutionStatus): ExecutionStatus.PreMerge {
+  private getPreMergeExecStatus(executionStatus: MaybeValidExecutionStatus): ExecutionStatus.PreMerge {
     if (executionStatus !== ExecutionStatus.PreMerge)
       throw Error(`Invalid pre-merge execution status: expected: ${ExecutionStatus.PreMerge}, got ${executionStatus}`);
     return executionStatus;
   }
 
-  private getPostMergeExecStatus(executionStatus: ExecutionStatus): ExecutionStatus.Valid | ExecutionStatus.Syncing {
+  private getPostMergeExecStatus(
+    executionStatus: MaybeValidExecutionStatus
+  ): ExecutionStatus.Valid | ExecutionStatus.Syncing {
     if (executionStatus === ExecutionStatus.PreMerge)
       throw Error(
         `Invalid post-merge execution status: expected: ${ExecutionStatus.Syncing} or ${ExecutionStatus.Valid} , got ${executionStatus}`
