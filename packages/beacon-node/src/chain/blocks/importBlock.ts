@@ -274,7 +274,7 @@ export async function importBlock(chain: ImportBlockModules, fullyVerifiedBlock:
     const finalizedBlockHash = chain.forkChoice.getFinalizedBlock().executionPayloadBlockHash ?? ZERO_HASH_HEX;
     if (headBlockHash !== ZERO_HASH_HEX) {
       chain.executionEngine.notifyForkchoiceUpdate(headBlockHash, safeBlockHash, finalizedBlockHash).catch((e) => {
-        chain.logger.error("Error pushing notifyForkchoiceUpdate()", {headBlockHash, finalizedBlockHash}, e);
+        chain.logger.error("Error on engine_newPayload", {headBlockHash, safeBlockHash, finalizedBlockHash}, e);
       });
     }
   }

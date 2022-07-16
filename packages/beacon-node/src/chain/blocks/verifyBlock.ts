@@ -196,6 +196,7 @@ export async function verifyBlockStateTransition(
   if (executionPayloadEnabled) {
     // TODO: Handle better notifyNewPayload() returning error is syncing
     const execResult = await chain.executionEngine.notifyNewPayload(executionPayloadEnabled);
+    chain.logger.debug("notifyNewPayload result", {slot: block.message.slot, status: execResult.status});
 
     switch (execResult.status) {
       case ExecutePayloadStatus.VALID:
@@ -248,16 +249,28 @@ export async function verifyBlockStateTransition(
         const justifiedBlock = chain.forkChoice.getJustifiedBlock();
 
         if (
-          !parentBlock ||
-          // Following condition is the !(Not) of the safe import condition
-          (parentBlock.executionStatus === ExecutionStatus.PreMerge &&
-            justifiedBlock.executionStatus === ExecutionStatus.PreMerge &&
-            block.message.slot + opts.safeSlotsToImportOptimistically > chain.clock.currentSlot)
+          // 1. Parent of the block has execution
+          parentBlock?.executionStatus !== ExecutionStatus.PreMerge ||
+          // 2. The justified checkpoint has execution enabled
+          justifiedBlock.executionStatus !== ExecutionStatus.PreMerge ||
+          // 3. The current slot (as per the system clock) is at least SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY ahead of
+          //    the slot of the block being imported.
+          chain.clock.currentSlot >= block.message.slot + opts.safeSlotsToImportOptimistically
         ) {
+          // Ok to import
+        } else {
           throw new BlockError(block, {
             code: BlockErrorCode.EXECUTION_ENGINE_ERROR,
             execStatus: ExecutePayloadStatus.UNSAFE_OPTIMISTIC_STATUS,
-            errorMessage: `not safe to import ${execResult.status} payload within ${opts.safeSlotsToImportOptimistically} of currentSlot, status=${execResult.status}`,
+            errorMessage:
+              `not safe to import ${execResult.status} payload: ` +
+              [
+                `parent.executionStatus=${parentBlock?.executionStatus}`,
+                `justified.executionStatus=${justifiedBlock.executionStatus}`,
+                `currentSlot=${chain.clock.currentSlot}`,
+                `block.slot=${block.message.slot}`,
+                `safeSlotsToImportOptimistically=${opts.safeSlotsToImportOptimistically}`,
+              ].join(" "),
           });
         }
 
