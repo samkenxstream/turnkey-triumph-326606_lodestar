@@ -122,11 +122,15 @@ export async function verifyBlockStateTransition(
     switch (execResult.status) {
       case ExecutePayloadStatus.VALID:
         executionStatus = ExecutionStatus.Valid;
-        chain.forkChoice.validateLatestHash({
-          executionStatus,
-          latestValidExecHash: execResult.latestValidHash,
-          invalidateTillBlockHash: null,
-        });
+        // Forkchoice's validation concern is right now limited to validating the block
+        // parent and upwards. May be on fcU latestValidExecHash can be passed as it is.
+        if (parentBlock.executionPayloadBlockHash !== null) {
+          chain.forkChoice.validateLatestHash({
+            executionStatus,
+            latestValidExecHash: parentBlock.executionPayloadBlockHash,
+            invalidateTillBlockHash: null,
+          });
+        }
         break; // OK
 
       case ExecutePayloadStatus.INVALID: {
