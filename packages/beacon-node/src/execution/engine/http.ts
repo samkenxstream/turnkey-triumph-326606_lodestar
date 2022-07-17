@@ -1,4 +1,4 @@
-import {bellatrix, RootHex, Root} from "@lodestar/types";
+import {bellatrix, RootHex} from "@lodestar/types";
 import {BYTES_PER_LOGS_BLOOM} from "@lodestar/params";
 import {fromHex} from "@lodestar/utils";
 
@@ -187,7 +187,7 @@ export class ExecutionEngineHttp implements IExecutionEngine {
    * If any of the above fails due to errors unrelated to the normal processing flow of the method, client software MUST respond with an error object.
    */
   async notifyForkchoiceUpdate(
-    headBlockHash: Root | RootHex,
+    headBlockHash: RootHex,
     safeBlockHash: RootHex,
     finalizedBlockHash: RootHex,
     payloadAttributes?: PayloadAttributes

@@ -188,11 +188,12 @@ export async function prepareExecutionPayload(
   // prepareExecutionPayload will throw error via notifyForkchoiceUpdate if
   // the EL returns Syncing on this request to prepare a payload
   // TODO: Handle only this case, DO NOT put a generic try / catch that discards all errors
-  const payloadId = await chain.executionEngine.notifyForkchoiceUpdate(parentHash, safeBlockHash, finalizedBlockHash, {
-    timestamp,
-    prevRandao,
-    suggestedFeeRecipient,
-  });
+  const payloadId = await chain.executionEngine.notifyForkchoiceUpdate(
+    toHex(parentHash),
+    safeBlockHash,
+    finalizedBlockHash,
+    {timestamp, prevRandao, suggestedFeeRecipient}
+  );
 
   // Should never happen, notifyForkchoiceUpdate() with payload attributes always returns payloadId
   if (payloadId === null) {
