@@ -60,6 +60,9 @@ export const forkChoiceTest: TestRunnerFn<ForkChoiceTestCase, void> = (fork) => 
           // Since the tests have deep-reorgs attested data is not available often printing lots of error logs.
           // While this function is only called for head blocks, best to disable.
           disableLightClientServerOnImportBlockHead: true,
+          // No need to log BlockErrors, the spec test runner will only log them if not not expected
+          // Otherwise spec tests logs get cluttered with expected errors
+          disableOnBlockError: true,
           assertCorrectProgressiveBalances,
         },
         {
@@ -122,17 +125,25 @@ export const forkChoiceTest: TestRunnerFn<ForkChoiceTestCase, void> = (fork) => 
               if (isValid) throw e;
             }
           }
-          // pow_block step
+
+          // **on_merge_block execution**
+          // Adds PowBlock data which is required for executing on_block(store, block).
+          // The file is located in the same folder (see below). PowBlocks should be used as return values for
+          // get_pow_block(hash: Hash32) -> PowBlock function if hashes match.
           else if (isPowBlock(step)) {
             const powBlock = testcase.powBlocks.get(step.pow_block);
-            logger.debug(`Step ${i}/${stepsLen} pow-block`, {
-              blockHash: powBlock?.blockHash ? toHexString(powBlock.blockHash) : "",
-              parentHash: powBlock?.parentHash ? toHexString(powBlock.parentHash) : "",
-            });
-            eth1.setPowBlock(powBlock);
-            if (powBlock) {
-              await executionEngine.notifyNewPowBlock(powBlock);
+            if (!powBlock) {
+              throw Error(`pow_block file not found ${step.pow_block}`);
             }
+            logger.debug(`Step ${i}/${stepsLen} pow_block_`, {
+              blockHash: toHexString(powBlock.blockHash),
+              parentHash: toHexString(powBlock.parentHash),
+            });
+
+            // Register PowBlock for `get_pow_block(hash: Hash32)` calls in verifyBlock
+            eth1.addPowBlock(powBlock);
+            // Register PowBlock to allow validation in execution engine
+            executionEngine.addPowBlock(powBlock);
           }
 
           // checks step
@@ -350,7 +361,7 @@ class Eth1ForBlockProductionMock implements IEth1ForBlockProduction {
     return this.items.get(powBlockHash) ?? null;
   }
 
-  setPowBlock(powBlock: bellatrix.PowBlock | undefined): void {
+  addPowBlock(powBlock: bellatrix.PowBlock | undefined): void {
     if (!powBlock) return;
 
     this.items.set(toHexString(powBlock.blockHash), {
