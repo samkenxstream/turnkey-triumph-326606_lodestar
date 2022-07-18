@@ -9,7 +9,12 @@ import {
 } from "@lodestar/state-transition";
 import {allForks, bellatrix} from "@lodestar/types";
 import {toHexString} from "@chainsafe/ssz";
-import {IForkChoice, ExecutionStatus,MaybeValidExecutionStatus, assertValidTerminalPowBlock} from "@lodestar/fork-choice";
+import {
+  IForkChoice,
+  ExecutionStatus,
+  MaybeValidExecutionStatus,
+  assertValidTerminalPowBlock,
+} from "@lodestar/fork-choice";
 import {IChainForkConfig} from "@lodestar/config";
 import {ILogger} from "@lodestar/utils";
 import {IMetrics} from "../../metrics/index.js";
@@ -49,7 +54,11 @@ export async function verifyBlockStateTransition(
   chain: VerifyBlockModules,
   block: allForks.SignedBeaconBlock,
   opts: ImportBlockOpts & BlockProcessOpts
-): Promise<{postState: CachedBeaconStateAllForks; executionStatus: MaybeValidExecutionStatus; proposerBalanceDiff: number}> {
+): Promise<{
+  postState: CachedBeaconStateAllForks;
+  executionStatus: MaybeValidExecutionStatus;
+  proposerBalanceDiff: number;
+}> {
   const {validProposerSignature, validSignatures} = opts;
 
   // TODO: Skip in process chain segment
