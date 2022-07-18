@@ -2,7 +2,7 @@ import {Epoch, RootHex} from "@lodestar/types";
 import {toHexString} from "@chainsafe/ssz";
 
 import {ProtoBlock, ProtoNode, HEX_ZERO_HASH, ExecutionStatus, LVHExecResponse} from "./interface.js";
-import {ProtoArrayError, ProtoArrayErrorCode} from "./errors.js";
+import {ProtoArrayError, ProtoArrayErrorCode, LVHExecError, LVHExecErrorCode} from "./errors.js";
 
 export const DEFAULT_PRUNE_THRESHOLD = 0;
 type ProposerBoost = {root: RootHex; score: number};
@@ -20,6 +20,7 @@ export class ProtoArray {
   finalizedRoot: RootHex;
   nodes: ProtoNode[];
   indices: Map<RootHex, number>;
+  lvhError?: LVHExecError;
 
   private previousProposerBoost?: ProposerBoost | null = null;
 
@@ -358,16 +359,19 @@ export class ProtoArray {
       node.executionStatus !== ExecutionStatus.Valid &&
       node.executionStatus !== ExecutionStatus.PreMerge
     ) {
-      switch (node?.executionStatus) {
-        // If parent's execution is Invalid, we can't accept this block
-        // It should only happen on the leaf's parent, because we can't
-        // have a non invalid's parent as valid, if this happens it
-        // is a critical failure. So a chec
+      switch (node.executionStatus) {
         case ExecutionStatus.Invalid:
+          // This is a catastrophe, and indicates consensus failure and a non
+          // recoverable damage. There is no further processing that can be done.
+          // Just assign error for marking proto-array perma damaged and throw!
+          this.lvhError = {
+            lvhCode: LVHExecErrorCode.InvalidToValid,
+            blockRoot: node.blockRoot,
+            execHash: node.executionPayloadBlockHash,
+          };
           throw new ProtoArrayError({
-            code: ProtoArrayErrorCode.INVALID_PARENT_EXECUTION_STATUS,
-            root: node.blockRoot,
-            parent: node.parentRoot,
+            code: ProtoArrayErrorCode.INVALID_LVH_EXECUTION_RESPONSE,
+            ...this.lvhError,
           });
 
         case ExecutionStatus.Syncing:
@@ -394,13 +398,6 @@ export class ProtoArray {
    */
 
   propagateInValidExecutionStatusByIndex(invalidateTillIndex: number, latestValidHashIndex: number | undefined): void {
-    /*
-     * invalidateAll is a flag which indicates detection of consensus failure
-     * if latestValidHashIndex has to be strictly parent of invalidateTillIndex
-     * else its consensus failure already!
-     */
-    let invalidateAll = false;
-
     let invalidateIndex: number = invalidateTillIndex;
     // If latestValidHashIndex is undefined, i.e. we didn't find the LVH, only
     // invalidate invalidateTillIndex
@@ -408,14 +405,27 @@ export class ProtoArray {
 
     while (invalidateIndex > invalidateUntilIndex) {
       const invalidNode = this.getNodeFromIndex(invalidateIndex);
-      if (
-        invalidNode.executionStatus !== ExecutionStatus.Syncing &&
-        invalidNode.executionStatus !== ExecutionStatus.Invalid
-      ) {
-        // This is a catastrophe, and indicates consensus failure
-        // the entire forkchoice should be invalidated
-        invalidateAll = true;
+
+      if (invalidNode.executionStatus === ExecutionStatus.PreMerge) {
+        // This is also problematic case since lvh should have come as `0x00..00` with forkchoice
+        // passing us correct latestValidHashIndex. But we can be forgiving here and breakout
+        // if we reach pre-merge
+        break;
+      } else if (invalidNode.executionStatus === ExecutionStatus.Valid) {
+        // This is a catastrophe, and indicates consensus failure and a non
+        // recoverable damage. There is no further processing that can be done.
+        // Just assign error for marking proto-array perma damaged and throw!
+        this.lvhError = {
+          lvhCode: LVHExecErrorCode.ValidToInvalid,
+          blockRoot: invalidNode.blockRoot,
+          execHash: invalidNode.executionPayloadBlockHash,
+        };
+        throw new ProtoArrayError({
+          code: ProtoArrayErrorCode.INVALID_LVH_EXECUTION_RESPONSE,
+          ...this.lvhError,
+        });
       }
+
       invalidNode.executionStatus = ExecutionStatus.Invalid;
       if (invalidNode.parent === undefined) {
         // We have invalidated the entire chain in forkchoice, so time to exit and
@@ -431,10 +441,21 @@ export class ProtoArray {
       const parent = node.parent !== undefined ? this.getNodeByIndex(node.parent) : undefined;
       // Only invalidate if this is post merge, and either parent is invalid or the
       // concensus has failed
-      if (
-        node.executionStatus !== ExecutionStatus.PreMerge &&
-        (invalidateAll || parent?.executionStatus === ExecutionStatus.Invalid)
-      ) {
+      if (node.executionStatus !== ExecutionStatus.PreMerge && parent?.executionStatus === ExecutionStatus.Invalid) {
+        if (node.executionStatus === ExecutionStatus.Valid) {
+          // This is a catastrophe, and indicates consensus failure and a non
+          // recoverable damage. There is no further processing that can be done.
+          // Just assign error for marking proto-array perma damaged and throw!
+          this.lvhError = {
+            lvhCode: LVHExecErrorCode.ValidToInvalid,
+            blockRoot: node.blockRoot,
+            execHash: node.executionPayloadBlockHash,
+          };
+          throw new ProtoArrayError({
+            code: ProtoArrayErrorCode.INVALID_LVH_EXECUTION_RESPONSE,
+            ...this.lvhError,
+          });
+        }
         node.executionStatus = ExecutionStatus.Invalid;
         node.bestChild = undefined;
         node.bestDescendant = undefined;
@@ -448,6 +469,13 @@ export class ProtoArray {
    * Follows the best-descendant links to find the best-block (i.e., head-block).
    */
   findHead(justifiedRoot: RootHex): RootHex {
+    if (this.lvhError !== undefined) {
+      throw new ProtoArrayError({
+        code: ProtoArrayErrorCode.INVALID_LVH_EXECUTION_RESPONSE,
+        ...this.lvhError,
+      });
+    }
+
     const justifiedIndex = this.indices.get(justifiedRoot);
     if (justifiedIndex === undefined) {
       throw new ProtoArrayError({

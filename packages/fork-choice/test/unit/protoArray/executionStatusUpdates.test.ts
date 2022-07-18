@@ -1,5 +1,6 @@
 import {expect} from "chai";
 import {ProtoArray, ExecutionStatus, MaybeValidExecutionStatus, BlockExecution} from "../../../src/index.js";
+import {LVHExecErrorCode} from "../../../src/protoArray/errors.js";
 
 type ValidationTestCase = {
   root: string;
@@ -480,66 +481,20 @@ describe("executionStatus / invalidate all forkchoice if we invalidate previous 
    * entire forkchoice should be invalidated because of buggy CL response
    *
    *  0 (PreMerge) <- 1A (Invalid) <- 2A (Invalid) <- 3A (Invalid)
-   *                               ^- 2B (Invalid) <- 3B (Invalid)
+   *                               ^- 2B (Valid)   <- 3B (Valid)
    *                               ~~ 2C (Invalid) <- 3C (Invalid)
    */
-  fc.validateLatestHash({
-    executionStatus: ExecutionStatus.Invalid,
-    latestValidExecHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
-    invalidateTillBlockHash: "3B",
-  });
-  const postMergeInvalidated = collectProtoarrayValidationStatus(fc);
-  it("entire forkchoice should be invalidated because of buggy CL response", () => {
-    expect(postMergeInvalidated).to.be.deep.equal([
-      {
-        root: "0",
-        bestChild: undefined,
-        bestDescendant: undefined,
-        executionStatus: ExecutionStatus.PreMerge,
-      },
-      {
-        root: "1A",
-        bestChild: undefined,
-        bestDescendant: undefined,
-        executionStatus: "Invalid",
-      },
-      {
-        root: "2A",
-        bestChild: undefined,
-        bestDescendant: undefined,
-        executionStatus: "Invalid",
-      },
-      {
-        root: "3A",
-        bestChild: undefined,
-        bestDescendant: undefined,
-        executionStatus: "Invalid",
-      },
-      {
-        root: "2B",
-        bestChild: undefined,
-        bestDescendant: undefined,
-        executionStatus: "Invalid",
-      },
-      {
-        root: "3B",
-        bestChild: undefined,
-        bestDescendant: undefined,
-        executionStatus: "Invalid",
-      },
-      {
-        root: "2C",
-        bestChild: undefined,
-        bestDescendant: undefined,
-        executionStatus: "Invalid",
-      },
-      {
-        root: "3C",
-        bestChild: undefined,
-        bestDescendant: undefined,
-        executionStatus: "Invalid",
-      },
-    ]);
+  it("protoarray should be poisioned with a buggy LVH response", () => {
+    expect(() =>
+      fc.validateLatestHash({
+        executionStatus: ExecutionStatus.Invalid,
+        latestValidExecHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+        invalidateTillBlockHash: "3A",
+      })
+    ).to.throw(Error);
+
+    expect(fc.lvhError).to.be.deep.equal({lvhCode: LVHExecErrorCode.ValidToInvalid, blockRoot: "1A", execHash: "1A"});
+    expect(() => fc.findHead("0")).to.throw(Error);
   });
 });
 
