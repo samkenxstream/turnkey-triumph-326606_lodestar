@@ -123,7 +123,7 @@ export async function verifyBlockStateTransition(
     throw new BlockError(block, {code: BlockErrorCode.PARENT_UNKNOWN, parentRoot});
   }
 
-  let executionStatus: ExecutionStatus;
+  let executionStatus: MaybeValidExecutionStatus;
   if (executionPayloadEnabled) {
     // TODO: Handle better notifyNewPayload() returning error is syncing
     const execResult = await chain.executionEngine.notifyNewPayload(executionPayloadEnabled);
