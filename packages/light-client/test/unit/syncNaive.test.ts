@@ -1,15 +1,14 @@
 import {expect} from "chai";
 import bls from "@chainsafe/bls";
-import {altair, phase0, Root, ssz, SyncPeriod} from "@lodestar/types";
-import {BeaconStateAltair} from "@lodestar/state-transition";
-import {toHexString} from "@chainsafe/ssz";
+import {altair, ssz, SyncPeriod} from "@lodestar/types";
 import {chainConfig} from "@lodestar/config/default";
 import {createIBeaconConfig} from "@lodestar/config";
 import {EPOCHS_PER_SYNC_COMMITTEE_PERIOD, SLOTS_PER_EPOCH} from "@lodestar/params";
-import {processLightClientUpdate} from "../naive/update.js";
-import {prepareUpdateNaive, IBeaconChainLc} from "../prepareUpdateNaive.js";
-import {getInteropSyncCommittee, getSyncAggregateSigningRoot, SyncCommitteeKeys} from "../utils.js";
+import {processLightClientUpdate} from "../utils/naive/update.js";
+import {prepareUpdateNaive, IBeaconChainLc} from "../utils/prepareUpdateNaive.js";
+import {getInteropSyncCommittee, getSyncAggregateSigningRoot, SyncCommitteeKeys} from "../utils/utils.js";
 import {LightClientStoreFast} from "../../src/types.js";
+import {MockBeaconChainLc} from "../mocks/beacon_chain_lc_mock.js";
 
 /* eslint-disable @typescript-eslint/naming-convention */
 
@@ -100,32 +99,3 @@ describe("Lightclient flow", () => {
     processLightClientUpdate(config, store, update, currentSlot);
   });
 });
-
-/**
- * Mock BeaconChainLc interface that returns the blockHeaders and states given at the constructor.
- * Throws for any unknown root
- */
-class MockBeaconChainLc implements IBeaconChainLc {
-  private readonly blockHeaders = new Map<string, phase0.BeaconBlockHeader>();
-  private readonly states = new Map<string, altair.BeaconState>();
-
-  constructor(blockHeaders: phase0.BeaconBlockHeader[], states: altair.BeaconState[]) {
-    for (const blockHeader of blockHeaders)
-      this.blockHeaders.set(toHexString(ssz.phase0.BeaconBlockHeader.hashTreeRoot(blockHeader)), blockHeader);
-    for (const state of states) this.states.set(toHexString(ssz.altair.BeaconState.hashTreeRoot(state)), state);
-  }
-
-  async getBlockHeaderByRoot(blockRoot: Root): Promise<phase0.BeaconBlockHeader> {
-    const rootHex = toHexString(blockRoot);
-    const blockHeader = this.blockHeaders.get(rootHex);
-    if (!blockHeader) throw Error(`No blockHeader for ${rootHex}`);
-    return blockHeader;
-  }
-
-  async getStateByRoot(stateRoot: Root): Promise<BeaconStateAltair> {
-    const rootHex = toHexString(stateRoot);
-    const state = this.states.get(rootHex);
-    if (!state) throw Error(`No state for ${rootHex}`);
-    return ssz.altair.BeaconState.toViewDU(state);
-  }
-}

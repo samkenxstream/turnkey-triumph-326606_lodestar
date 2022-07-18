@@ -15,9 +15,9 @@ import {
 import {altair, phase0, Slot, ssz, SyncPeriod} from "@lodestar/types";
 import {hash} from "@chainsafe/persistent-merkle-tree";
 import {BitArray, fromHexString} from "@chainsafe/ssz";
-import {SyncCommitteeFast} from "../src/types.js";
-import {computeSigningRoot} from "../src/utils/domain.js";
-import {getLcLoggerConsole} from "../src/utils/logger.js";
+import {SyncCommitteeFast} from "../../src/types.js";
+import {computeSigningRoot} from "../../src/utils/domain.js";
+import {getLcLoggerConsole} from "../../src/utils/logger.js";
 
 const CURRENT_SYNC_COMMITTEE_INDEX = 22;
 const CURRENT_SYNC_COMMITTEE_DEPTH = 5;

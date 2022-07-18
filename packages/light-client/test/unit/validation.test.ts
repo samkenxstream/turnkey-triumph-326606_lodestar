@@ -1,3 +1,4 @@
+import {expect} from "chai";
 import bls from "@chainsafe/bls";
 import {Tree} from "@chainsafe/persistent-merkle-tree";
 import {altair, ssz} from "@lodestar/types";
@@ -12,7 +13,7 @@ import {
 } from "@lodestar/params";
 import {assertValidLightClientUpdate} from "../../src/validation.js";
 import {LightClientSnapshotFast, SyncCommitteeFast} from "../../src/types.js";
-import {defaultBeaconBlockHeader, getSyncAggregateSigningRoot, signAndAggregate} from "../utils.js";
+import {defaultBeaconBlockHeader, getSyncAggregateSigningRoot, signAndAggregate} from "../utils/utils.js";
 
 describe("validateLightClientUpdate", () => {
   const genValiRoot = Buffer.alloc(32, 9);
@@ -96,6 +97,6 @@ describe("validateLightClientUpdate", () => {
   });
 
   it("Validate valid update", () => {
-    assertValidLightClientUpdate(config, snapshot.nextSyncCommittee, update);
+    expect(() => assertValidLightClientUpdate(config, snapshot.nextSyncCommittee, update)).to.not.throw();
   });
 });

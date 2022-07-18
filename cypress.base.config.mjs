@@ -17,13 +17,16 @@ Object.defineProperty(webpackTestConfig, "output", {
   },
 });
 
+process.on("uncaughtException", console.error);
+process.on("unhandledRejection", console.error);
+
 export default defineConfig({
   env: {
     TESTING_ENV: true,
   },
   screenshotOnRunFailure: false,
   video: false,
-  chromeWebSecurity: true,
+  chromeWebSecurity: false,
   e2e: {
     specPattern: "test/unit/**/*.test.ts",
     supportFile: false,

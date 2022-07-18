@@ -11,7 +11,7 @@
     "types": [
       "cypress"
     ],
-    "noEmit": false,
-    "noEmitOnError": false,
+    "noEmit": true,
+    "noEmitOnError": true,
   }
 }

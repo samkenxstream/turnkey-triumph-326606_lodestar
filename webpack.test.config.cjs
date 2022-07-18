@@ -3,9 +3,12 @@ const ResolveTypeScriptPlugin = require("resolve-typescript-plugin");
 
 module.exports = {
   mode: "development",
-  target: "web",
   experiments: {
     topLevelAwait: true,
+  },
+  // devtool: "eval-source-map",
+  stats: {
+    errorDetails: true,
   },
   plugins: [
     new webpack.ProvidePlugin({
@@ -14,6 +17,7 @@ module.exports = {
     }),
   ],
   module: {
+    exprContextCritical: false,
     rules: [
       {
         test: /\.ts?$/,
@@ -21,7 +25,10 @@ module.exports = {
           {
             loader: "ts-loader",
             options: {
-              configFile: "tsconfig.build.json",
+              configFile: "tsconfig.e2e.json",
+              experimentalFileCaching: true,
+              transpileOnly: true,
+              projectReferences: true,
             },
           },
         ],
@@ -30,17 +37,24 @@ module.exports = {
     ],
   },
   resolve: {
-    plugins: [new ResolveTypeScriptPlugin()],
-    extensions: [".ts", ".js"],
+    plugins: [
+      new ResolveTypeScriptPlugin({includeNodeModules: false}),
+      // new webpack.IgnorePlugin({
+      //   resourceRegExp: /.*js$/,
+      //   contextRegExp: /.*@chainsafe\/blst\/.*/,
+      // }),
+    ],
     fallback: {
-      crypto: require.resolve("crypto-browserify"),
-      path: require.resolve("path-browserify"),
+      "@chainsafe/blst": false,
+      path: false,
       fs: false,
       os: false,
-      zlib: require.resolve("browserify-zlib"),
-      stream: require.resolve("stream-browserify"),
+      zlib: false,
+      stream: false,
       http: require.resolve("stream-http"),
+      http2: require.resolve("stream-http"),
       https: require.resolve("https-browserify"),
+      crypto: require.resolve("crypto-browserify"),
     },
   },
 };
